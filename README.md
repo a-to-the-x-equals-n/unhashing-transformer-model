@@ -1,5 +1,7 @@
 # <font color='#ffb733'>Password Hash Inversion with Seq2Seq Transformers</font> <!-- omit in toc -->
 
+_Hashing functions are deterministic; the same input always produces the same output. This raises an open question: could a model exploit subtle statistical regularities in weak hashes to reconstruct the original plaintexts?_  
+
 ## <font color='#ffb733'>Overview</font> <!-- omit in toc -->
 
 This project explores whether weak password hashing algorithms (e.g., MD5) preserve statistical patterns that can be learned by machine learning models. The task is framed as a __sequence-to-sequence problem__: given a hash (input sequence), predict the original password (output sequence).  
@@ -13,10 +15,14 @@ A __Transformer encoder–decoder model__ implemented in PyTorch is used, traine
 - [Model](#model)
 - [Training](#training)
 - [Evaluation](#evaluation)
-- [Why This Matters](#why-this-matters)
-- [Future Work](#future-work)
+- [Large File Tracking (Git LFS)](#large-file-tracking-git-lfs)
+  - [Setup](#setup)
+  - [Cloning and Pulling LFS Files](#cloning-and-pulling-lfs-files)
+- [Resources](#resources)
+  - [Supplemental Information](#supplemental-information)
+  - [Python Docs](#python-docs)
+  - [Sources](#sources)
 - [Disclaimer](#disclaimer)
-  - [Resources](#resources)
 
 ## <font color='#ffb733'>Goals</font>
 
@@ -47,7 +53,7 @@ Example (MD5 hash generation in Python):
     print(h)  # e.g., 482c811da5d5b4bc6d497ffa98491e38
 ```
 
-The resulting dataset is stored as a CSV with two columns: `password, hash`.
+The resulting dataset is stored as a CSV / TXT / JSON / YAML with two columns: `password, hash`.
 
 ## <font color='#ffb733'>Model</font>
 
@@ -106,24 +112,64 @@ Metrics used to assess model performance:
 
 where A and B are the sets of characters in the true and predicted password.
 
-## <font color='#ffb733'>Why This Matters</font>
+## <font color = '#ffb733'>Large File Tracking (Git LFS)</font>
 
-Hashing functions are deterministic; the same input always produces the same output. This raises an open question: could a model exploit subtle statistical regularities in weak hashes to reconstruct the original plaintexts?  
+This project uses [Git Large File Storage (LFS)](https://git-lfs.github.com/) to handle very large datasets that should not be committed directly into the repository.
 
-This project provides a systematic study of whether machine learning can mine patterns in weak hash outputs and what effect model capacity has on learnability.
+### Setup
 
-## <font color='#ffb733'>Future Work</font>
+1. Install Git LFS if you haven’t already:
 
-- Compare across different hashing algorithms (MD5, SHA-1, CRC32, MurmurHash).  
-- Test with synthetic password datasets designed to control character distribution and entropy.  
+```bash
+  git lfs install
+```
+
+2. Track the large password and frequency files:
+
+```bash
+  git lfs track "data/raw/plaintext/1mil_pw.txt"
+  git lfs track "data/raw/plaintext/char_frequencies.txt"
+  git lfs track "data/raw/yaml/1mil_pw.yaml"
+  git lfs track "data/raw/yaml/char_freq.yaml"
+```
+
+3. Commit the `.gitattributes` file that Git LFS generates:
+
+```bash
+  git add .gitattributes
+  git commit -m "configure git-lfs tracking for large dataset files"
+```
+4. Once the files are tracked, you can `git add <filename>` as normal.
+
+```bash
+  git add raw/plaintext/1mil_pw.txt
+  git add raw/yaml/1mil_pw.yaml
+```
+### Cloning and Pulling LFS Files
+
+When someone clones this repository, Git will only fetch lightweight pointers to the large files.  
+To download the actual file contents, run:
+
+```bash
+  git lfs pull
+```
+
+## <font color='#ffb733'>Resources</font>
+
+### <font color = '#ffb733'>Supplemental Information</font>
+
+[Transformer Model From Scratch - YT](https://www.youtube.com/watch?v=kCc8FmEb1nY)  
+
+### <font color = '#ffb733'>Python Docs</font>
+
+[Pytorch Transformer Documentation](https://docs.pytorch.org/docs/stable/generated/torch.nn.Transformer.html)    
+[Python's Hashlib](https://docs.python.org/3/library/hashlib.html#)
+
+### <font color = '#ffb733'>Sources</font>
+
+[Top 1 Million Passwords From Data Dumps](https://github.com/danielmiessler/SecLists/blob/master/Passwords/Common-Credentials/Pwdb_top-1000000.txt)
+[Attention is All You Need](https://proceedings.neurips.cc/paper_files/paper/2017/file/3f5ee243547dee91fbd053c1c4a845aa-Paper.pdf)
 
 ## <font color='#ffb733'>Disclaimer</font>
 
 This project is for __academic and research purposes only__. No live password dumps or sensitive user data are used. All datasets are sourced from public, cleaned lists (e.g., RockYou on Kaggle, SecLists) or synthetically generated.
-
-
-# <font color='#ffb733'>Resources</font>
-
-[Official Pytorch Transformer Documentation](https://docs.pytorch.org/docs/stable/generated/torch.nn.Transformer.html)  
-[Transformer Model From Scratch - YT](https://www.youtube.com/watch?v=kCc8FmEb1nY)  
-[Attention is All You Need](https://proceedings.neurips.cc/paper_files/paper/2017/file/3f5ee243547dee91fbd053c1c4a845aa-Paper.pdf)
