@@ -1,0 +1,4 @@
+data/raw/plaintext/1mil_pw.txt filter=lfs diff=lfs merge=lfs -text
+data/raw/plaintext/char_frequencies.txt filter=lfs diff=lfs merge=lfs -text
+data/raw/yaml/1mil_pw.yaml filter=lfs diff=lfs merge=lfs -text
+data/raw/yaml/char_freq.yaml filter=lfs diff=lfs merge=lfs -text
