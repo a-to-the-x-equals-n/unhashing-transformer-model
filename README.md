@@ -16,6 +16,7 @@ A __Transformer encoder–decoder model__ implemented in PyTorch is used, traine
 - [Why This Matters](#why-this-matters)
 - [Future Work](#future-work)
 - [Disclaimer](#disclaimer)
+  - [Resources](#resources)
 
 ## <font color='#ffb733'>Goals</font>
 
@@ -119,3 +120,10 @@ This project provides a systematic study of whether machine learning can mine pa
 ## <font color='#ffb733'>Disclaimer</font>
 
 This project is for __academic and research purposes only__. No live password dumps or sensitive user data are used. All datasets are sourced from public, cleaned lists (e.g., RockYou on Kaggle, SecLists) or synthetically generated.
+
+
+# <font color='#ffb733'>Resources</font>
+
+[Official Pytorch Transformer Documentation](https://docs.pytorch.org/docs/stable/generated/torch.nn.Transformer.html)  
+[Transformer Model From Scratch - YT](https://www.youtube.com/watch?v=kCc8FmEb1nY)  
+[Attention is All You Need](https://proceedings.neurips.cc/paper_files/paper/2017/file/3f5ee243547dee91fbd053c1c4a845aa-Paper.pdf)
