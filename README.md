@@ -2,27 +2,134 @@
 
 _Hashing functions are deterministic; the same input always produces the same output. This raises an open question: could a model exploit subtle statistical regularities in weak hashes to reconstruct the original plaintexts?_  
 
-## <font color='#ffb733'>Overview</font> <!-- omit in toc -->
+
+
+## <font color='#ffb733'>Contents</font> <!-- omit in toc -->
+
+- [Project Introduction](#project-introduction)
+  - [Goals](#goals)
+  - [Dataset](#dataset)
+  - [Model](#model)
+  - [Training](#training)
+  - [Evaluation](#evaluation)
+  - [Resources](#resources)
+    - [Supplemental Information](#supplemental-information)
+    - [Python Docs](#python-docs)
+    - [Sources](#sources)
+  - [Disclaimer](#disclaimer)
+
+
+## <font color = '#ffb733'>Requirements & Setup</font>
+
+This project depends on __Python__ and a few external libraries.
+
+This project has been tested on:  
+- __`WSL 2.6`__  
+- __`Ubuntu 22.04`__  
+- __`Python 3.10`__
+
+### <font color = '#ffb733'>Cloning the Repository</font>
+
+First, clone this repository and move into its directory:
+
+```bash
+git clone https://github.com/a-to-the-x-equals-n/unhashing-transformer-model.git
+cd unhashing-transformer-model
+```
+
+#### <font color = '#ffb733'>(_Optional_) Virtual Environment</font>
+
+_Sometimes recommended so you don't disturb your local setup._
+
+Create virtual environment:
+
+```bash
+python3 -m venv .venv
+```
+
+Activate it:
+
+- On Linux/WSL/macOS:
+
+  ```bash
+  source .venv/bin/activate
+  ```
+
+- On Windows (PowerShell):
+
+  ```powershell
+  .venv\Scripts\Activate
+  ```
+
+When you’re done, deactivate with:
+
+```bash
+deactivate
+```
+
+### <font color = '#ffb733'>Python Dependencies</font>
+
+CPU-only install (default):
+
+```bash
+pip install -r requirements.txt
+```
+
+GPU install (CUDA-enabled PyTorch):  
+
+>__NOTE__: _If installed on a machine w/out an NVIDIA GPU, PyTorch will just fall back to CPU mode at runtime. But you're still left with the "dead weight" from the heavier GPU install._
+
+```bash
+pip install -r requirements-gpu.txt
+```
+
+## <font color = '#ffb733'>Large File Tracking (Git LFS)</font>
+
+This project uses [Git Large File Storage (LFS)](https://git-lfs.github.com/) to handle very large datasets that should not be committed directly into the repository.
+
+### Setup
+
+1. Install Git LFS if you haven’t already:
+
+```bash
+git lfs install
+```
+
+2. Track the large password and frequency files:
+
+```bash
+git lfs track "data/raw/plaintext/1mil_pw.txt"
+git lfs track "data/raw/plaintext/char_frequencies.txt"
+git lfs track "data/raw/yaml/1mil_pw.yaml"
+git lfs track "data/raw/yaml/char_freq.yaml"
+```
+
+3. Commit the `.gitattributes` file that Git LFS generates:
+
+```bash
+git add .gitattributes
+git commit -m "configure git-lfs tracking for large dataset files"
+```
+4. Once the files are tracked, you can `git add <filename>` as normal.
+
+```bash
+git add raw/plaintext/1mil_pw.txt
+git add raw/yaml/1mil_pw.yaml
+```
+### Cloning and Pulling LFS Files
+
+When someone clones this repository, Git will only fetch lightweight pointers to the large files.  
+To download the actual file contents, run:
+
+```bash
+git lfs pull
+```
+
+# <font color ='#ffb733'>Project Introduction</font>
 
 This project explores whether weak password hashing algorithms (e.g., MD5) preserve statistical patterns that can be learned by machine learning models. The task is framed as a __sequence-to-sequence problem__: given a hash (input sequence), predict the original password (output sequence).  
 
 A __Transformer encoder–decoder model__ implemented in PyTorch is used, trained from scratch with randomly initialized weights. The architecture is __scalable__ (layers, hidden size, attention heads adjustable) to allow experiments across different model capacities depending on available hardware.
-
-## <font color='#ffb733'>Contents</font> <!-- omit in toc -->
-
-- [Goals](#goals)
-- [Dataset](#dataset)
-- [Model](#model)
-- [Training](#training)
-- [Evaluation](#evaluation)
-- [Large File Tracking (Git LFS)](#large-file-tracking-git-lfs)
-  - [Setup](#setup)
-  - [Cloning and Pulling LFS Files](#cloning-and-pulling-lfs-files)
-- [Resources](#resources)
-  - [Supplemental Information](#supplemental-information)
-  - [Python Docs](#python-docs)
-  - [Sources](#sources)
-- [Disclaimer](#disclaimer)
 
 ## <font color='#ffb733'>Goals</font>
 
@@ -111,48 +218,6 @@ Metrics used to assess model performance:
 ```
 
 where A and B are the sets of characters in the true and predicted password.
-
-## <font color = '#ffb733'>Large File Tracking (Git LFS)</font>
-
-This project uses [Git Large File Storage (LFS)](https://git-lfs.github.com/) to handle very large datasets that should not be committed directly into the repository.
-
-### Setup
-
-1. Install Git LFS if you haven’t already:
-
-```bash
-  git lfs install
-```
-
-2. Track the large password and frequency files:
-
-```bash
-  git lfs track "data/raw/plaintext/1mil_pw.txt"
-  git lfs track "data/raw/plaintext/char_frequencies.txt"
-  git lfs track "data/raw/yaml/1mil_pw.yaml"
-  git lfs track "data/raw/yaml/char_freq.yaml"
-```
-
-3. Commit the `.gitattributes` file that Git LFS generates:
-
-```bash
-  git add .gitattributes
-  git commit -m "configure git-lfs tracking for large dataset files"
-```
-4. Once the files are tracked, you can `git add <filename>` as normal.
-
-```bash
-  git add raw/plaintext/1mil_pw.txt
-  git add raw/yaml/1mil_pw.yaml
-```
-### Cloning and Pulling LFS Files
-
-When someone clones this repository, Git will only fetch lightweight pointers to the large files.  
-To download the actual file contents, run:
-
-```bash
-  git lfs pull
-```
 
 ## <font color='#ffb733'>Resources</font>
 
