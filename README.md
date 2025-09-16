@@ -2,10 +2,15 @@
 
 _Hashing functions are deterministic; the same input always produces the same output. This raises an open question: could a model exploit subtle statistical regularities in weak hashes to reconstruct the original plaintexts?_  
 
-
-
 ## <font color='#ffb733'>Contents</font> <!-- omit in toc -->
 
+- [Requirements \& Setup](#requirements--setup)
+    - [Cloning the Repository](#cloning-the-repository)
+      - [(_Optional_) Virtual Environment](#optional-virtual-environment)
+    - [Python Dependencies](#python-dependencies)
+  - [Large File Tracking (Git LFS)](#large-file-tracking-git-lfs)
+    - [Setup](#setup)
+    - [Cloning and Pulling LFS Files](#cloning-and-pulling-lfs-files)
 - [Project Introduction](#project-introduction)
   - [Goals](#goals)
   - [Dataset](#dataset)
@@ -18,8 +23,7 @@ _Hashing functions are deterministic; the same input always produces the same ou
     - [Sources](#sources)
   - [Disclaimer](#disclaimer)
 
-
-## <font color = '#ffb733'>Requirements & Setup</font>
+# <font color = '#ffb733'>Requirements & Setup</font>
 
 This project depends on __Python__ and a few external libraries.
 
