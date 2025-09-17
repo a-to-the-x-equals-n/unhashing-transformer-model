@@ -30,19 +30,19 @@ def get_char_distribution(fpath: str | Path, /, *, show : bool = False, plot : b
     counts = Counter()
 
     if fpath.suffix == '.yaml':
-        print('-reading YAML-')
+        print('- reading YAML -')
         with fpath.open('r', encoding = 'utf-8', errors = 'ignore') as y:
             data = yaml.safe_load(y)
 
-        for pw in data.get('passwords', []):    # safely grab the list
-            counts.update(pw)                   # update counts with chars in password
+        for pw in data: 
+            counts.update(pw)   # update counts with chars in password
 
     else:
-        print('-reading TXT-')
+        print('- reading TXT -')
         with fpath.open('r', encoding = 'utf-8', errors = 'ignore') as f:
             for line in f:
-                pw = line.strip()               # remove leading/trailing whitespace
-                counts.update(pw)               # update counts with chars in password
+                pw = line.strip()   # remove leading/trailing whitespace
+                counts.update(pw)   # update counts with chars in password
 
     if show:
         for ch, cts in counts.most_common():
@@ -75,5 +75,5 @@ def get_char_distribution(fpath: str | Path, /, *, show : bool = False, plot : b
 
 
 if __name__ == '__main__':
-    f = Path.cwd().parent / 'data' / 'raw' / 'yaml' / '1mil_pw.yaml'
+    f = Path.cwd().parent / 'data' / 'cleaned' / 'yaml' / '1mil_pw_cleaned.yaml'
     c = get_char_distribution(f, save = True)

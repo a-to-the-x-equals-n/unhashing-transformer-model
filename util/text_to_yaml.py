@@ -23,14 +23,13 @@ def txt_to_yaml(txt_path: str | Path, yaml_path: str | Path) -> None:
 
     # read each line from plaintext file, strip whitespace, ignore blank lines
     with txt_path.open('r', encoding = 'utf-8', errors = 'ignore') as f:
+        print(' -- reading --')
         passwords = [line.strip() for line in f if line.strip()]
-
-    # create a dictionary with key "passwords" and the list of passwords as value
-    data = {'passwords': passwords}
 
     # write dictionary to yaml file with unicode allowed and stable ordering
     with yaml_path.open('w', encoding = 'utf-8') as f:
-        yaml.dump(data, f, allow_unicode = True, sort_keys = False)
+        print(' -- writing --')
+        yaml.dump(passwords, f, allow_unicode = True, sort_keys = False)
 
 
 if __name__ == '__main__':
@@ -40,3 +39,4 @@ if __name__ == '__main__':
     yml = Path.cwd().parent / 'data' / 'raw' / 'yaml' / '1mil_pw.yaml'
 
     txt_to_yaml(txt, yml)
+    print(' -- success --')
