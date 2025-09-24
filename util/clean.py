@@ -22,8 +22,7 @@ async def klean(f: str | Path, out: str | Path) -> list[str]:
     list[str]
         The cleaned list of passwords written to the output file.
     '''
-    data = await FileIO.load_yaml(f)
-    passwords = data.get('passwords', [])
+    passwords = await FileIO.load_yaml(f)
     cleaned = [pw.strip() for pw in passwords if all(ch in ALLOWED for ch in pw)]
     print(' -- cleaned --')
     await FileIO.save_yaml(cleaned, out)

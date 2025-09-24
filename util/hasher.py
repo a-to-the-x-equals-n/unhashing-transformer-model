@@ -19,13 +19,13 @@ def hash_md5(pw: str) -> str:
     '''
     return hashlib.md5(pw.encode('utf-8')).hexdigest()
 
-async def main(_in: str | Path, out: str | Path) -> None:
+async def main(f: str | Path, out: str | Path) -> None:
     '''
     Load passwords from YAML, hash them with MD5, and save as a JSON mapping.
 
     Parameters:
     -----------
-    _in : str | Path
+    f : str | Path
         Path to the YAML file containing a top-level "passwords" list.
 
     out : str | Path
@@ -36,8 +36,7 @@ async def main(_in: str | Path, out: str | Path) -> None:
     None
         Writes the hash → password mapping to the output JSON file.
     '''
-    data = await FileIO.load_yaml(_in)
-    passwords = data.get('passwords', [])
+    passwords = await FileIO.load_yaml(f)
 
     hashed = {hash_md5(pw): pw for pw in passwords}
     await FileIO.save_json(hashed, out)
