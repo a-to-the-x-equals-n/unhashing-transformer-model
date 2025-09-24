@@ -44,6 +44,7 @@ class FileIO:
         data = await asyncio.to_thread(read)
         event.set()
         await task
+        print('  ("\'`\( 一_一)/`\'")\n\t-- success\n')
         return data
 
     @staticmethod
@@ -61,6 +62,7 @@ class FileIO:
         await asyncio.to_thread(write)
         event.set()
         await task
+        print('  ("\'`\( 一_一)/`\'")\n\t-- success\n')
 
     # json
     @staticmethod
@@ -77,6 +79,7 @@ class FileIO:
         data = await asyncio.to_thread(read)
         event.set()
         await task
+        print('  ("\'`\( 一_一)/`\'")\n\t-- success\n')
         return data
 
     @staticmethod
@@ -94,6 +97,7 @@ class FileIO:
         await asyncio.to_thread(write)
         event.set()
         await task
+        print('  ("\'`\( 一_一)/`\'")\n\t-- success\n')
 
     # text
     @staticmethod
@@ -110,6 +114,7 @@ class FileIO:
         lines = await asyncio.to_thread(read)
         event.set()
         await task
+        print('  ("\'`\( 一_一)/`\'")\n\t-- success\n')
         return lines
 
     @staticmethod
@@ -127,6 +132,7 @@ class FileIO:
         await asyncio.to_thread(write)
         event.set()
         await task
+        print('  ("\'`\( 一_一)/`\'")\n\t-- success\n')
 
 
 async def main():
