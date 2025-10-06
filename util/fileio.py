@@ -1,27 +1,11 @@
 import json
 import yaml
 import math
-import asyncio
 from pathlib import Path
 
 class FileIO:
     # global root directory one level up from cwd
-    ROOT = Path.cwd().parent
-
-    # spinner
-    @staticmethod
-    async def waiting(label: str, event: asyncio.Event) -> None:
-        '''
-        display a simple non-blocking progress ticker until the given event is set
-        '''
-        print()
-        i = 0
-        while not event.is_set():
-            dots = '.' * (i % 4)                
-            print(f'\r {label}{dots:<3}', end = '', flush = True)
-            await asyncio.sleep(.5)
-            i += 1
-        print('\n')
+    ROOT = Path(__file__).resolve().parent.parent
 
     @staticmethod
     def resolve(path: str | Path) -> Path:
@@ -32,105 +16,65 @@ class FileIO:
 
     # yaml
     @staticmethod
-    async def load_yaml(path: str | Path) -> dict | list:
+    def load_yaml(path: str | Path) -> dict | list:
         p = FileIO.resolve(path)
 
-        event = asyncio.Event()
-        task = asyncio.create_task(FileIO.waiting('[loading yaml]', event))
+        with p.open('r', encoding = 'utf-8', errors = 'ignore') as f:
+            data = yaml.safe_load(f)
 
-        def read():
-            with p.open('r', encoding = 'utf-8', errors = 'ignore') as f:
-                return yaml.safe_load(f)
-
-        data = await asyncio.to_thread(read)
-        event.set()
-        await task
         return data
 
     @staticmethod
-    async def save_yaml(obj: dict | list, path: str | Path) -> None:
+    def save_yaml(obj: dict | list, path: str | Path) -> None:
         p = FileIO.resolve(path)
         p.parent.mkdir(parents = True, exist_ok = True)
 
-        event = asyncio.Event()
-        task = asyncio.create_task(FileIO.waiting('[saving yaml]', event))
+        with p.open('w', encoding = 'utf-8') as f:
+            yaml.dump(obj, f, allow_unicode = True, sort_keys = False)
 
-        def write():
-            with p.open('w', encoding = 'utf-8') as f:
-                yaml.dump(obj, f, allow_unicode = True, sort_keys = False)
+        print(f'saved {type(obj)} to {p}')
 
-        await asyncio.to_thread(write)
-        event.set()
-        await task
 
     # json
     @staticmethod
-    async def load_json(path: str | Path) -> dict | list:
+    def load_json(path: str | Path) -> dict | list:
         p = FileIO.resolve(path)
 
-        event = asyncio.Event()
-        task = asyncio.create_task(FileIO.waiting('[loading json]', event))
+        with p.open('r', encoding = 'utf-8') as f:
+            data =  json.load(f)
 
-        def read():
-            with p.open('r', encoding = 'utf-8') as f:
-                return json.load(f)
-
-        data = await asyncio.to_thread(read)
-        event.set()
-        await task
         return data
 
     @staticmethod
-    async def save_json(obj: dict | list, path: str | Path) -> None:
+    def save_json(obj: dict | list, path: str | Path) -> None:
         p = FileIO.resolve(path)
         p.parent.mkdir(parents = True, exist_ok = True)
-
-        event = asyncio.Event()
-        task = asyncio.create_task(FileIO.waiting('[saving json]', event))
-
-        def write():
-            with p.open('w', encoding = 'utf-8') as f:
-                json.dump(obj, f, indent = 2, ensure_ascii = False)
-
-        await asyncio.to_thread(write)
-        event.set()
-        await task
+        
+        with p.open('w', encoding = 'utf-8') as f:
+            json.dump(obj, f, indent = 2, ensure_ascii = False)
+        print(f'saved {type(obj)} to {p}')
 
     # text
     @staticmethod
-    async def load_txt(path: str | Path) -> list[str]:
+    def load_txt(path: str | Path) -> list[str]:
         p = FileIO.resolve(path)
 
-        event = asyncio.Event()
-        task = asyncio.create_task(FileIO.waiting('[loading txt]', event))
+        with p.open('r', encoding = 'utf-8', errors = 'ignore') as f:
+            lines =  [line.rstrip('\n') for line in f]
 
-        def read():
-            with p.open('r', encoding = 'utf-8', errors = 'ignore') as f:
-                return [line.rstrip('\n') for line in f]
-
-        lines = await asyncio.to_thread(read)
-        event.set()
-        await task
         return lines
 
     @staticmethod
-    async def save_txt(lines: list[str], path: str | Path) -> None:
+    def save_txt(lines: list[str], path: str | Path) -> None:
         p = FileIO.resolve(path)
         p.parent.mkdir(parents = True, exist_ok = True)
 
-        event = asyncio.Event()
-        task = asyncio.create_task(FileIO.waiting('[saving txt]', event))
-
-        def write():
-            with p.open('w', encoding = 'utf-8') as f:
-                f.write('\n'.join(lines))
-
-        await asyncio.to_thread(write)
-        event.set()
-        await task
+        with p.open('w', encoding = 'utf-8') as f:
+            f.write('\n'.join(lines))
+        print(f'saved {type(lines)} to {p}')
 
     @staticmethod
-    async def shard_file(filepath: str | Path, shards: int) -> None:
+    def shard_file(filepath: str | Path, shards: int) -> None:
         '''
         Split a dataset into a specified number of JSON shards.
 
@@ -153,9 +97,9 @@ class FileIO:
 
         # load using internal helpers
         if suffix in ('.yaml', '.yml'):
-            data = await FileIO.load_yaml(p)
+            data = FileIO.load_yaml(p)
         elif suffix == '.json':
-            data = await FileIO.load_json(p)
+            data = FileIO.load_json(p)
         else:
             raise ValueError("shard_file expects JSON or YAML dict input")
 
@@ -184,6 +128,5 @@ class FileIO:
 
             print(f"wrote shard {i} → {out_path} ({len(chunk)} entries)")
     
-
 if __name__ == '__main__':
-    asyncio.run(FileIO.shard_file('data/structured/1mil_pw_structured.json', shards = 10))
+    pass
