@@ -2,9 +2,9 @@ from pathlib import Path
 from collections import Counter
 import matplotlib.pyplot as plt
 from fileio import FileIO
-import asyncio
 
-async def get_char_distribution(path: str | Path, /, *, show: bool = False, plot: bool = False, save: bool = None) -> Counter:
+
+def get_char_distribution(path: str | Path, /, *, show: bool = False, plot: bool = False, save: bool = None) -> Counter:
     '''
     Compute a character-frequency distribution from a password dataset.
 
@@ -32,7 +32,7 @@ async def get_char_distribution(path: str | Path, /, *, show: bool = False, plot
     p = FileIO.resolve(path)
 
     if p.suffix in ('.yaml', '.yml'):
-        data = await FileIO.load_yaml(p)  # synchronous fallback
+        data = FileIO.load_yaml(p)  # synchronous fallback
         for pw in data:
             counts.update(pw)
     else:
@@ -54,10 +54,10 @@ async def get_char_distribution(path: str | Path, /, *, show: bool = False, plot
 
     if save:
         out_path = p.parent / save
-        await FileIO.save_yaml(dict(counts), out_path)
+        FileIO.save_yaml(dict(counts), out_path)
 
     return counts
 
 if __name__ == '__main__':
     f = 'data/cleaned/yaml/1mil_pw_cleaned.yaml'
-    c = asyncio.run(get_char_distribution(f, save = 'char_freq_cleaned.yaml'))
+
