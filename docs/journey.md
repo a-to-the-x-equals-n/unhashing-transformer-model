@@ -6,6 +6,7 @@ This doc serves as a record of the journey when creating this project; including
 - [Beginning Stages](#beginning-stages)
   - [Tokenization](#tokenization)
 - [Back and Fourths on filetype](#back-and-fourths-on-filetype)
+  - [The Re-Tokenizing](#the-re-tokenizing)
 
 
 ## Beginning Stages
@@ -32,3 +33,11 @@ This doc serves as a record of the journey when creating this project; including
   - refactored all shards to TSV
 
 
+### The Re-Tokenizing
+
+- once I leared of pyTorch's Dataset class, I realized that all of my tokenization research and code wasn't necessary
+  - with this class, the tokenization happens when you load the trainig session
+  
+>NOTE: just learned about `.npz` files.  
+> - might, once more, change the file type of the shards to `.npz` so all of the data is prepocessed as numpy arrays so training is even faster.
+> - will probably wait to see how fast/slow a training session is now w/ the TSV's before spending the time on it 
