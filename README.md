@@ -1,6 +1,8 @@
 # <font color='#ffb733'>Password Hash Inversion with Seq2Seq Transformers</font> <!-- omit in toc -->
 
-_Hashing functions are deterministic; the same input always produces the same output. This raises an open question: Does the MD5 transformation leak enough statistical structure that a neural seq2seq model can learn to reverse it?_
+_Given that hashing functions are deterministic—each input consistently maps to a single output—this raises the question of whether a model could leverage subtle statistical patterns within these mappings to reconstruct or approximate the original plaintexts from their hashes._
+
+_A custom Transformer encoder–decoder trained from scratch is the cleanest scientific experiment. It strips away irrelevant pretraining and directly asks: “Does the MD5 transformation leak enough statistical structure that a neural seq2seq model can learn to reverse it?”_
 
 ## <font color='#ffb733'>Contents</font> <!-- omit in toc -->
 
