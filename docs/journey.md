@@ -7,6 +7,7 @@ This doc serves as a record of the journey when creating this project; including
   - [Tokenization](#tokenization)
 - [Back and Fourths on filetype](#back-and-fourths-on-filetype)
   - [The Re-Tokenizing](#the-re-tokenizing)
+  - [`Dataset` \& `Dataloader` Refreshers](#dataset--dataloader-refreshers)
 
 
 ## Beginning Stages
@@ -41,3 +42,10 @@ This doc serves as a record of the journey when creating this project; including
 >NOTE: just learned about `.npz` files.  
 > - might, once more, change the file type of the shards to `.npz` so all of the data is prepocessed as numpy arrays so training is even faster.
 > - will probably wait to see how fast/slow a training session is now w/ the TSV's before spending the time on it 
+
+### `Dataset` & `Dataloader` Refreshers
+
+[Building a Neural Network with PyTorch in 15 Minutes | Coding Challenge](https://www.youtube.com/watch?v=mozBidd58VQ)  
+[PyTorch DataLoader Explained: How to make Basic and Custom Datasets](https://www.youtube.com/watch?v=7tfGVOulJRM)   
+[PyTorch Tutorial 09 - Dataset and DataLoader - Batch Training](https://www.youtube.com/watch?v=PXOzkkB5eH0&t=491s)  
+[Build Your First Pytorch Model In Minutes! [Tutorial + Code]](https://www.youtube.com/watch?v=tHL5STNJKag&t=411s)
