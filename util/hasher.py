@@ -1,25 +1,25 @@
 import hashlib
-import asyncio
 from pathlib import Path
 from fileio import FileIO
 
-def hash_md5(pw: str) -> str:
+def hash_md5(s: str) -> str:
     '''
-    Hash a plaintext password using MD5.
+    Hash string with MD5.
 
     Parameters:
     -----------
-    pw : str
-        The plaintext password.
+    s : str
+        Plaintext string.
 
     Returns:
     --------
     str
-        The MD5 hash of the password, encoded as a 32-character hexadecimal string.
+        MD5 hash as a 32-character hexadecimal string.
     '''
-    return hashlib.md5(pw.encode('utf-8')).hexdigest()
+    return hashlib.md5(s.encode('utf-8')).hexdigest()
 
-async def main(f: str | Path, out: str | Path) -> None:
+
+def main(p: str | Path, out: str | Path) -> None:
     '''
     Load passwords from YAML, hash them with MD5, and save as a JSON mapping.
 
@@ -36,14 +36,14 @@ async def main(f: str | Path, out: str | Path) -> None:
     None
         Writes the hash → password mapping to the output JSON file.
     '''
-    passwords = await FileIO.load_yaml(f)
+    passwords = FileIO.load_yaml(p)
 
     hashed = {hash_md5(pw): pw for pw in passwords}
-    await FileIO.save_json(hashed, out)
+    FileIO.save_json(hashed, out)
 
     print(f'saved {len(hashed)} entries to {out}')
 
 if __name__ == '__main__':
     in_file = 'data/cleaned/yaml/1mil_pw_cleaned.yaml'
     out_file = 'data/structured/1mil_pw_structured.json'
-    asyncio.run(main(in_file, out_file))
+    main(in_file, out_file)
