@@ -5,7 +5,6 @@ import torch.nn.functional as F
 
 
 
-
 class OptimusPrime(nn.Module):
     '''
     Transformer encoder–decoder model that learns to map a hash digest to corresponding plaintext password.
