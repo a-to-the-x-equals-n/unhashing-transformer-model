@@ -16,7 +16,6 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model = OptimusPrime(
     vocab_size = 257,
     pw_vocab_size = len(dataset._ALLOWED_PW_CHARS), # 74
-    pad_id = dataset.pad_id
 ).to(device)
 
 
