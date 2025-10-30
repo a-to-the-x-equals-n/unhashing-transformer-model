@@ -2,14 +2,23 @@
 import torch
 from torch.optim import Adam
 from optimus_prime import OptimusPrime
-from data import dataset, collate_batch, dataset
+from data import HashPwDataset, collate_batch
 from torch.utils.data import DataLoader
+from pathlib import Path
 
-# TODO: setup imports / or reorganize for:
-#   dataset, collate_batch, and OptimusPrime model
 
+EPOCHS = 1
+shard_path = Path.cwd().parent.parent / 'project' / 'data' / 'training' / 'shards' / 'toy_shard.tsv'
+dataset = HashPwDataset(shard_path)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+# -- BUILD MODELS --
+dloader = DataLoader(
+    dataset,
+    batch_size = 8,
+    shuffle = True,
+    collate_fn = collate_batch
+)
 
 model = OptimusPrime(
     vocab_size = 257,
@@ -23,21 +32,10 @@ model = OptimusPrime(
     dropout = 0.1
 ).to(device)
 
-
-
-
-# build DataLoader with custom collate function
-dloader = DataLoader(
-    dataset,
-    batch_size = 8,
-    shuffle = True,
-    collate_fn = collate_batch
-)
-
 optimizer = Adam(model.parameters(), lr = 1e-4)
 
-EPOCHS = 1
 
+# training
 for epoch in range(EPOCHS):
     model.train()
     total_loss = 0.0
