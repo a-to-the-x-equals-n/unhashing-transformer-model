@@ -53,7 +53,7 @@ class HashPwDataset(Dataset):
         
     # allowed plaintext characters
     # only letters, digits, and specific punctuation
-    _ALLOWED_PW_CHARS = sorted(set(string.ascii_letters + string.digits + '!@#$%^&*()-_'))
+    _ALLOWED_PW_CHARS = sorted(set(string.ascii_letters + string.digits + '!@#$%^&*()-_')) + ['<EOS>']
 
     def __init__(self, shard: str | Path) -> None:
         '''
@@ -67,8 +67,8 @@ class HashPwDataset(Dataset):
                 
         # each hash byte can take values 0–255 (256 total)
         # we add 1 more "padding" token for sequence alignment
-        self.vocab_size = 256 + 1
-        self.pad_id = 256
+        self.vocab_size = 74 + 1
+        self.pad_id = 74
 
         # build a lookup table for hexadecimal conversion
         # "htoi" = hex → integer
@@ -187,7 +187,9 @@ def collate_batch(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tenso
 
     # create a padded tensor for all passwords
     # fill with `pad_id` so model knows which positions are "not real"
-    pad_id = 256
+
+    '''NOTE: change back to 256'''
+    pad_id = 74
     padded = torch.full((len(passwords), max_len), fill_value = pad_id, dtype = torch.long)
 
     # copy each password tensor into the padded batch tensor

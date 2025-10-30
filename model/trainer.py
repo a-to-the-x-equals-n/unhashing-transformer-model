@@ -11,11 +11,16 @@ from torch.utils.data import DataLoader
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
-
-
 model = OptimusPrime(
     vocab_size = 257,
-    pw_vocab_size = len(dataset._ALLOWED_PW_CHARS), # 74
+    pw_vocab_size = 75,
+    pad_id = 74,
+    hash_pad_id = 256,
+    d_model = 256,
+    n_heads = 8,
+    num_layers = 4, 
+    ff_dim = 512, 
+    dropout = 0.1
 ).to(device)
 
 

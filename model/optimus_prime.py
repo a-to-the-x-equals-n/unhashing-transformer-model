@@ -63,7 +63,7 @@ class OptimusPrime(nn.Module):
     cryptographic inversion experiments or generative password modeling.
     '''
 
-    def __init__(self, vocab_size: int = 257, pw_vocab_size: int = 74, pad_id: int = 73, hash_pad_id: int = 256, d_model: int = 256, n_heads: int = 8, num_layers: int = 4, ff_dim: int = 512, dropout: float = 0.1) -> None:
+    def __init__(self, vocab_size: int = 257, pw_vocab_size: int = 75, pad_id: int = 74, hash_pad_id: int = 256, d_model: int = 256, n_heads: int = 8, num_layers: int = 4, ff_dim: int = 512, dropout: float = 0.1) -> None:
         super().__init__()
 
         # ---- embedding layers ----
@@ -186,7 +186,7 @@ class OptimusPrime(nn.Module):
 
         # project each decoder output to logits over password vocabulary
         
-        logits = self.output(pw_decoded)  # [B, T, pw_vocab_size]
+        logits = self.output_head(pw_decoded)  # [B, T, pw_vocab_size]
 
         return logits # logit = raw / unnormalized output of model before converted to probability
 
