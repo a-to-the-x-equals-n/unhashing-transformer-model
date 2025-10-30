@@ -6,6 +6,7 @@ import string
 from pathlib import Path
 
 
+
 # def decode_password(tensor):
 #     return ''.join(dataset.itos[i.item()] for i in tensor if i.item() != pad_id)
 
@@ -199,6 +200,9 @@ def collate_batch(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tenso
         'lengths': lengths        # [B]
     }
 
+
+shard_path = Path.cwd().parent.parent / 'project' / 'data' / 'training' / 'shards' / 'toy_shard.tsv'
+dataset = HashPwDataset(shard_path)
 
 
 if __name__ == '__main__':

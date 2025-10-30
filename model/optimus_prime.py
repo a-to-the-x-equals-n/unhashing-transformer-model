@@ -3,8 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-
-
 class OptimusPrime(nn.Module):
     '''
     Transformer encoder–decoder model that learns to map a hash digest to corresponding plaintext password.
@@ -65,13 +63,13 @@ class OptimusPrime(nn.Module):
     cryptographic inversion experiments or generative password modeling.
     '''
 
-    def __init__(self, vocab_size: int, pw_vocab_size: int, pad_id: int, d_model: int = 256, n_heads: int = 8, num_layers: int = 4, ff_dim: int = 512, dropout: float = 0.1) -> None:
+    def __init__(self, vocab_size: int = 257, pw_vocab_size: int = 74, pad_id: int = 73, hash_pad_id: int = 256, d_model: int = 256, n_heads: int = 8, num_layers: int = 4, ff_dim: int = 512, dropout: float = 0.1) -> None:
         super().__init__()
 
         # ---- embedding layers ----
         # convert integer-based tokens into dense vector embeddings that can carry meaning
         # padding_idx ensures that padded positions are ignored during training updates
-        self.hash_embed = nn.Embedding(vocab_size, d_model, padding_idx = pad_id)
+        self.hash_embed = nn.Embedding(vocab_size, d_model, padding_idx = hash_pad_id)
         self.pw_embed = nn.Embedding(pw_vocab_size, d_model, padding_idx = pad_id)
 
         # ---- transformer encoder ----
