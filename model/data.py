@@ -6,11 +6,10 @@ import string
 from pathlib import Path
 
 
-
 # def decode_password(tensor):
 #     return ''.join(dataset.itos[i.item()] for i in tensor if i.item() != pad_id)
 
-class HashPwDataset(Dataset):
+class Bumblebee(Dataset):
     '''
     A PyTorch Dataset that pairs fixed-length hash digests with variable-length plaintext passwords.
     
@@ -161,7 +160,7 @@ def collate_batch(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tenso
     Parameters:
     -----------
     batch : list[dict[str, torch.Tensor]]
-        A list of items returned by `HashPwDataset.__getitem__`
+        A list of items returned by `Bumblebee.__getitem__`
 
     Returns:
     --------
@@ -202,29 +201,3 @@ def collate_batch(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tenso
         'lengths': lengths        # [B]
     }
 
-
-shard_path = Path.cwd().parent.parent / 'project' / 'data' / 'training' / 'shards' / 'toy_shard.tsv'
-dataset = HashPwDataset(shard_path)
-
-
-if __name__ == '__main__':
-    # toy dataset shard
-    shard_path = Path.cwd().parent.parent / 'project' / 'data' / 'training' / 'shards' / 'toy_shard.tsv' 
-
-    # initialize dataset
-    dataset = HashPwDataset(shard_path)
-
-    # build DataLoader with custom collate function
-    dloader = DataLoader(
-        dataset,
-        batch_size = 8,
-        shuffle = True,
-        collate_fn = collate_batch
-    )
-
-    # fetch one batch to inspect
-    batch = next(iter(dloader))
-
-    print('hash shape     :', batch['hash'].shape)       # [B, 16]
-    print('password shape :', batch['password'].shape)   # [B, max_pw_len]
-    print('lengths        :', batch['lengths'])
