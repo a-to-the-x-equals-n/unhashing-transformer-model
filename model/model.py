@@ -166,7 +166,7 @@ class OptimusPrime(nn.Module):
 
         # build padding masks 
         # (so model ignores <PAD> entries)
-        pw_pad_mask = self.make_pad_mask(pw_batch)
+        pw_pad_mask = self.make_pad_mask(pw_batch, self.pad_id)
         hash_pad_mask = torch.zeros_like(hash_batch, dtype = torch.bool) # hashes are always 16 bytes, never padded; all False
         
 
