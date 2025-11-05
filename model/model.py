@@ -12,7 +12,7 @@ class OptimusPrime(nn.Module):
         patterns and character-level password distributions—going beyond simple linear
         associations to approximate deeper statistical correlations.
 
-        Parameters:
+    Parameters:
     -----------
     vocab_size : int
         Number of unique hash byte tokens (typically 257 = 256 values + 1 padding).
