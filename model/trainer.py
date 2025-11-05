@@ -6,6 +6,8 @@ from data import Bumblebee, collate_batch
 from torch.utils.data import DataLoader
 from pathlib import Path
 from tqdm import tqdm
+from torch.utils.tensorboard import SummaryWriter
+import time
 
 OPTIMUS = f'''
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣶⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
@@ -113,39 +115,70 @@ model = OptimusPrime(
     dropout = 0.1
 ).to(device)
 
+
+print(f'  [initializing TensorBoard]')
+writer = SummaryWriter(log_dir = 'runs/optimus')
 print(f'  [building Adam]')
 optimizer = Adam(model.parameters(), lr = 1e-4)
-
-
 print(f'\033[34m [START]\033[0m')
-# training
+
+# training loop
 for epoch in range(EPOCHS):
     model.train()
     total_loss = 0.0
+    epoch_start_time = time.time()
 
-    # tracks batches in current epoch
+    # progress bar for current epoch
     progress = tqdm(dloader, desc = f'Epoch {epoch + 1}/{EPOCHS}', leave = False, unit = ' batch')
 
-    for batch in progress:
+    for i, batch in enumerate(progress):
+        batch_start_time = time.time()
+
         # move data to GPU/CPU
         hashes = batch['hash'].to(device)
         pw = batch['password'].to(device)
 
         # forward pass
         logits = model(hashes, pw)
-        loss = model.compute_loss(logits, pw)   # compute loss 
+        loss = model.compute_loss(logits, pw)
 
         # backward pass
         optimizer.zero_grad()   # reset old gradients
         loss.backward()         # compute new gradients via backprop
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm = 1.0)  # clip grad norms to stabilize training
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm = 1.0)  # clip grad norms to stabilize training
         optimizer.step()        # update weights
 
+        # accumulate loss
         total_loss += loss.item()
+        avg_loss = total_loss / (i + 1) # average over batches processed so far
 
-        # current batch loss=
-        avg_loss = total_loss / len(dloader)
-        progress.set_postfix_str(f'loss = {avg_loss:.4f}')
+        # log metrics to tensorboard
+        global_step = epoch * len(dloader) + i
+        writer.add_scalar('Loss/batch', loss.item(), global_step)
+        writer.add_scalar('Loss/epoch_avg', avg_loss, global_step)
+        writer.add_scalar('Learning_rate', optimizer.param_groups[0]['lr'], global_step)
+        writer.add_scalar('Gradient/norm', grad_norm.item(), global_step)
+        batch_time = time.time() - batch_start_time    # log batch time
+        writer.add_scalar('Time/batch_seconds', batch_time, global_step)
+        
+        # update progress bar
+        progress.set_postfix_str(f'loss = {avg_loss:.4f}, grad_norm = {grad_norm.item():.4f}')
 
-# close progress bar
-progress.close()
+    # close progress bar for this epoch
+    progress.close()
+
+    # log epoch-level metrics
+    epoch_time = time.time() - epoch_start_time
+    final_epoch_loss = total_loss / len(dloader)
+
+    writer.add_scalar('Loss/epoch_final', final_epoch_loss, epoch)
+    writer.add_scalar('Time/epoch_minutes', epoch_time / 60, epoch)
+
+    print(f'\n [Epoch {epoch + 1}/{EPOCHS} complete]')
+    print(f'  [Final Loss]: {final_epoch_loss:.4f}')
+    print(f'  [Time]: {epoch_time / 60:.2f} minutes')
+
+writer.close()
+print(f'\n\033[34m [COMPLETE]\033[0m')
+print(f'  [view results]: tensorboard --logdir=runs')
+print(f'  [dashboard]: http://localhost:6006')
