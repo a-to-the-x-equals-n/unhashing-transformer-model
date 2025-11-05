@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from data import PAD_ID, SOS_ID, EOS_ID, ALLOWED_PW_CHARS
+
 
 class OptimusPrime(nn.Module):
     '''
@@ -62,13 +64,25 @@ class OptimusPrime(nn.Module):
     cryptographic inversion experiments or generative password modeling.
     '''
 
-    def __init__(self, vocab_size: int = 257, pw_vocab_size: int = 75, pad_id: int = 74, hash_pad_id: int = 256, d_model: int = 256, n_heads: int = 8, num_layers: int = 4, ff_dim: int = 512, dropout: float = 0.1) -> None:
+    def __init__(
+            self, 
+            vocab_size: int = 257, 
+            pw_vocab_size: int = len(ALLOWED_PW_CHARS), 
+            pad_id: int = PAD_ID, 
+            sos_id: int = SOS_ID,
+            eos_id: int = EOS_ID,
+            d_model: int = 256, 
+            n_heads: int = 8, 
+            num_layers: int = 4, 
+            ff_dim: int = 512, 
+            dropout: float = 0.1
+    ) -> None:
         super().__init__()
 
         # ---- embedding layers ----
         # convert integer-based tokens into dense vector embeddings that can carry meaning
         # padding_idx ensures that padded positions are ignored during training updates
-        self.hash_embed = nn.Embedding(vocab_size, d_model, padding_idx = hash_pad_id)
+        self.hash_embed = nn.Embedding(vocab_size, d_model)
         self.pw_embed = nn.Embedding(pw_vocab_size, d_model, padding_idx = pad_id)
 
         # ---- transformer encoder ----
@@ -118,25 +132,9 @@ class OptimusPrime(nn.Module):
 
         # store the padding ID for later masking
         self.pad_id = pad_id
-
-
-    def make_pad_mask(self, seq: torch.Tensor, pad_id: int) -> torch.Tensor:
-        '''
-        Create boolean mask where True marks padded tokens.
-        Mask tells the transformer which positions to ignore during attention.
-
-        Parameters:
-        -----------
-        seq : torch.Tensor
-            Tensor of shape [B, T] containing token indices.
-
-        Returns:
-        --------
-        torch.BoolTensor
-            Boolean mask of shape [B, T], where True = "ignore this position".
-        '''
-        return seq == pad_id
-
+        self.sos_id = sos_id
+        self.eos_id = eos_id
+    
 
     def forward(self, hash_batch: torch.Tensor, pw_batch: torch.Tensor) -> torch.Tensor:
         '''
@@ -149,66 +147,78 @@ class OptimusPrime(nn.Module):
         Parameters:
         -----------
         hash_batch : torch.LongTensor
-            Input hash tokens, shape [B, 16].
+            Input hash tokens, shape [B, 16]
 
         pw_batch : torch.LongTensor
-            Target password tokens, shape [B, T].
+            Password tokens INCLUDING <SOS> and <EOS>, shape [B, T]
 
         Returns:
         --------
         torch.Tensor
-            Logits of shape [B, T, pw_vocab_size] — unnormalized model predictions.
+            Logits of shape [B, T, pw_vocab_size]
+                (unnormalized model predictions)
         '''
 
+        # Decoder input: everything EXCEPT last token (<EOS>)
+        # [<SOS>, 'h', 'e', 'l', 'l', 'o', <EOS>] -> [<SOS>, 'h', 'e', 'l', 'l', 'o']
+        decoded_pw_batch = pw_batch[:, :-1]  # [B, T-1]
+
+        # Targets: everything EXCEPT first token (<SOS>)
+        # [<SOS>, 'h', 'e', 'l', 'l', 'o', <EOS>] → ['h', 'e', 'l', 'l', 'o', <EOS>]
+        # (used in compute_loss)
+
         # embed raw integer tokens into dense vectors
-        hash_emb = self.hash_embed(hash_batch)   # [B, 16, d_model]
-        pw_emb = self.pw_embed(pw_batch)         # [B, T, d_model]
+        hash_emb = self.hash_embed(hash_batch)      # [B, 16, d_model]
+        pw_emb = self.pw_embed(decoded_pw_batch)    # [B, T-1, d_model]
 
-        # build padding masks 
-        # (so model ignores <PAD> entries)
-        pw_pad_mask = self.make_pad_mask(pw_batch, self.pad_id)
-        hash_pad_mask = torch.zeros_like(hash_batch, dtype = torch.bool) # hashes are always 16 bytes, never padded; all False
+        # build padding masks
+        pw_pad_mask = (decoded_pw_batch == self.pad_id)      # [B, T-1]
         
+        # causal mask for decoder
+        n = decoded_pw_batch.size(1)
+        causal_mask = torch.triu(torch.ones(n, n), diagonal = 1).bool().to(decoded_pw_batch.device)  # [T-1, T-1]
 
-        # encode the hash sequence
-        hash_encoded = self.encoder(
-            hash_emb,
-            src_key_padding_mask = hash_pad_mask
-        )  # [B, 16, d_model]
+        # Encode hash (NO MASK NEEDED)
+        hash_encoded = self.encoder(hash_emb)  # [B, 16, d_model]
+        # NOTE: src_key_padding_mask defaults to None
 
-        # decode the password sequence conditioned on encoded hash
+        # decode password
         pw_decoded = self.decoder(
             tgt = pw_emb,
             memory = hash_encoded,
+            tgt_mask = causal_mask,
             tgt_key_padding_mask = pw_pad_mask,
-            memory_key_padding_mask = hash_pad_mask
-        )  # [B, T, d_model]
+        )  # [B, T-1, d_model]
 
         # project each decoder output to logits over password vocabulary
-        logits = self.output_head(pw_decoded)   # [B, T, pw_vocab_size]
+        logits = self.output_head(pw_decoded)   # [B, T-1, pw_vocab_size]
         return logits                           # logit = raw / unnormalized output of model before converted to probability
 
 
-    def compute_loss(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    def compute_loss(self, logits: torch.Tensor, pw_batch: torch.Tensor) -> torch.Tensor:
         '''
         Compute cross-entropy loss while ignoring padded positions.
 
         Parameters:
         -----------
         logits : torch.Tensor
-            Model output logits, shape [B, T, pw_vocab_size].
+            Model output logits, shape [B, T-1, pw_vocab_size]
 
-        targets : torch.Tensor
-            Ground-truth password tokens, shape [B, T].
+        pw_batch : torch.Tensor
+            Full password tokens INCLUDING <SOS> and <EOS>, shape [B, T]
 
         Returns:
         --------
         torch.Tensor
-            Scalar loss averaged over non-padded tokens.
+            Scalar loss averaged over non-padded tokens
         '''
-        B, T, V = logits.shape # batch size, sequence length, vocabulary size
-        logits = logits.view(B * T, V)
-        targets = targets.view(B * T)
 
-        # ignore_index ensures loss is computed only on valid tokens
+        # targets: skip <SOS> (first token)
+        targets = pw_batch[:, 1:]  # [B, T-1]
+    
+        B, T, V = logits.shape  # batch size, sequence length, vocabulary size
+        logits = logits.reshape(B * T, V)
+        targets = targets.reshape(B * T)
+
+        # ignore_index masks <PAD>, but <EOS> is now learned
         return F.cross_entropy(logits, targets, ignore_index = self.pad_id)
