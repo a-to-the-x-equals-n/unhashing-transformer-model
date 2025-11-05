@@ -1,21 +1,32 @@
 
 import torch
 from torch.optim import Adam
-from optimus_prime import OptimusPrime
-from data import HashPwDataset, collate_batch
+from model import OptimusPrime
+from data import Bumblebee, collate_batch
 from torch.utils.data import DataLoader
 from pathlib import Path
+from tqdm import tqdm
 
 
 EPOCHS = 1
-shard_path = Path.cwd().parent.parent / 'project' / 'data' / 'training' / 'shards' / 'toy_shard.tsv'
-dataset = HashPwDataset(shard_path)
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+shard_path = Path.cwd().parent / 'data' / 'training' / 'shards' / 'train_000.tsv'
+full_path = Path.cwd().parent / 'data' / 'training' / '1M_train.tsv'
+shard_path = full_path
+
+print(f'  training file: {shard_path.name}')
+dataset = Bumblebee(shard_path)
+
+if torch.cuda.is_available():
+    device = 'cuda'
+    print(f'  cuda found / using GPU')
+else:
+    device = 'cpu'
+    print(f'  cuda NOT found / using CPU')
 
 # -- BUILD MODELS --
 dloader = DataLoader(
     dataset,
-    batch_size = 8,
+    batch_size = 1024, 
     shuffle = True,
     collate_fn = collate_batch
 )
@@ -34,35 +45,34 @@ model = OptimusPrime(
 
 optimizer = Adam(model.parameters(), lr = 1e-4)
 
-
 # training
 for epoch in range(EPOCHS):
     model.train()
     total_loss = 0.0
 
-    for batch in dloader:
+    # tracks batches in current epoch
+    progress = tqdm(dloader, desc = f'Epoch {epoch + 1}/{EPOCHS}', leave = False, unit = ' batch')
+
+    for batch in progress:
         # move data to GPU/CPU
         hashes = batch['hash'].to(device)
         pw = batch['password'].to(device)
 
         # forward pass
         logits = model(hashes, pw)
+        loss = model.compute_loss(logits, pw)   # compute loss 
 
-        # compute loss (ignoring padding)
-        loss = model.compute_loss(logits, pw)
-
-        # reset old gradients
-        optimizer.zero_grad()
-
-        # compute new gradients via backprop
-        loss.backward()
-
-        # optional: clip gradient norms to stabilize training
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm = 1.0)
-
-        # apply weight updates
-        optimizer.step()
+        # backward pass
+        optimizer.zero_grad()   # reset old gradients
+        loss.backward()         # compute new gradients via backprop
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm = 1.0)  # clip grad norms to stabilize training
+        optimizer.step()        # update weights
 
         total_loss += loss.item()
 
-    print(f'Epoch {epoch+1} | Avg loss: {total_loss / len(dloader):.4f}')
+        # current batch loss=
+        avg_loss = total_loss / len(dloader)
+        progress.set_postfix_str(f'loss = {avg_loss:.4f}')
+
+# close progress bar
+progress.close()

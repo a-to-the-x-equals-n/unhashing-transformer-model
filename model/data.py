@@ -86,6 +86,9 @@ class Bumblebee(Dataset):
         # columns: [hash, password]
         df = pd.read_csv(shard, sep = '\t', names = ['hash', 'password'])
 
+        # pandas keeps inferring float dtypes if the password is all numeric
+        # so it's choking on the stoi list comprehension later
+        df['password'] = df['password'].astype(str)
 
         # convert each hash (hexadecimal string) into a NumPy array of bytes
         # MD5 hashes are 32 hex characters → 16 bytes total
