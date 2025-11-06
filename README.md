@@ -13,12 +13,23 @@ _A custom Transformer encoder–decoder trained from scratch is the cleanest sci
   - [Large File Tracking (Git LFS)](#large-file-tracking-git-lfs)
     - [Setup](#setup)
     - [Cloning and Pulling LFS Files](#cloning-and-pulling-lfs-files)
+- [Running the Model](#running-the-model)
+  - [Quick Start](#quick-start)
+  - [TensorBoard Monitoring](#tensorboard-monitoring)
+  - [Checkpoints](#checkpoints)
 - [Project Introduction](#project-introduction)
   - [Goals](#goals)
   - [Dataset](#dataset)
   - [Model](#model)
+    - [Architecture Components:](#architecture-components)
+    - [Scalable Parameters:](#scalable-parameters)
   - [Training](#training)
+    - [Training Features:](#training-features)
+    - [Key Components:](#key-components)
+    - [Example Training Configuration:](#example-training-configuration)
   - [Evaluation](#evaluation)
+    - [Evaluation Metrics:](#evaluation-metrics)
+    - [Example Evaluation:](#example-evaluation)
   - [Resources](#resources)
     - [Supplemental Information](#supplemental-information)
     - [Python Docs](#python-docs)
@@ -101,14 +112,26 @@ This project uses [Git Large File Storage (LFS)](https://git-lfs.github.com/) to
 git lfs install
 ```
 
-2. Track the large password and frequency files:
+2. Track the large dataset files and model checkpoints:
 
 ```bash
-git lfs track "data/raw/plaintext/1mil_pw.txt"
-git lfs track "data/raw/plaintext/char_frequencies.txt"
-git lfs track "data/raw/yaml/1mil_pw.yaml"
-git lfs track "data/raw/yaml/char_freq.yaml"
+# Source data (YAML files)
+git lfs track "data/source_data/dirty/*.yaml"
+git lfs track "data/source_data/clean/*.yaml"
+
+# Training data
+git lfs track "data/training/1M_train.tsv"
+git lfs track "data/training/1M_train.json"
+git lfs track "data/training/shards/*.tsv"
+
+# Model checkpoints
+git lfs track "*.pt"
 ```
+
+**Note**:
+- The `*.yaml` patterns track all YAML source files (password lists and character frequencies)
+- The `*.pt` pattern tracks all PyTorch model checkpoint files
+- Evaluation data (`data/eval/1K_eval.tsv`) is small enough to be tracked normally
 
 3. Commit the `.gitattributes` file that Git LFS generates:
 
@@ -119,8 +142,9 @@ git commit -m "configure git-lfs tracking for large dataset files"
 4. Once the files are tracked, you can `git add <filename>` as normal.
 
 ```bash
-git add raw/plaintext/1mil_pw.txt
-git add raw/yaml/1mil_pw.yaml
+git add data/source_data/dirty/1mil_pw.yaml
+git add data/training/1M_train.tsv
+git add model/checkpoints/*.pt
 ```
 ### Cloning and Pulling LFS Files
 
@@ -129,6 +153,65 @@ To download the actual file contents, run:
 
 ```bash
 git lfs pull
+```
+
+# <font color ='#ffb733'>Running the Model</font>
+
+The model is trained and evaluated using the Jupyter notebook `model/run.ipynb`. This notebook provides a complete workflow from data loading through evaluation.
+
+## <font color='#ffb733'>Quick Start</font>
+
+1. **Navigate to the model directory:**
+
+```bash
+cd model
+```
+
+2. Open `run.ipynb` with preferred Jupyter Notebook environment.
+
+
+3. **Run the notebook cells sequentially** (or use "Run All"):
+   - **Configuration**: Set device (CPU/GPU), paths, hyperparameters, and model architecture
+   - **Dataset Loading**: Load hash-password pairs from TSV files
+   - **Model Creation**: Initialize the OptimusPrime transformer
+   - **Training**: Run full training loop with TensorBoard logging and checkpointing
+   - **Evaluation**: Test on held-out data with multiple similarity metrics
+   - **Cleanup**: Close TensorBoard writer and display summary
+
+## <font color='#ffb733'>TensorBoard Monitoring</font>
+
+During training, metrics are logged to TensorBoard. To monitor training in real-time:
+
+```bash
+tensorboard --logdir=runs/optimus
+```
+
+Then navigate to `http://localhost:6006` in your browser.
+
+Logged metrics include:
+- **Loss/train**: Training loss per batch
+- **Gradient/norm**: Gradient norms for monitoring training stability
+- **Time/batch**: Batch processing time
+- **Eval/loss**: Evaluation loss
+- **Eval/exact_match**: Perfect password matches
+- **Eval/char_similarity**: Positional character matching
+- **Eval/levenshtein**: Normalized edit distance
+- **Eval/jaccard**: Character set overlap
+
+## <font color='#ffb733'>Checkpoints</font>
+
+Model checkpoints are automatically saved to `model/checkpoints/` during training:
+- `checkpoint_epoch_N.pt`: Saved every N epochs (configurable via `checkpoint_interval`)
+- `best_model.pt`: Best model based on validation loss
+
+To disable checkpoint saving/loading (useful for testing):
+
+```python
+trainer = Trainer(
+    # ... other parameters ...
+    save=False,  # Disable checkpoint saving
+    load=False   # Disable checkpoint loading
+)
 ```
 
 # <font color ='#ffb733'>Project Introduction</font>
@@ -170,60 +253,175 @@ The resulting dataset is stored as a CSV / TXT / JSON / YAML with two columns: `
 
 ## <font color='#ffb733'>Model</font>
 
-- __Architecture:__ Transformer encoder–decoder (PyTorch `nn.Transformer` or Hugging Face configs).  
-- __Input:__ Fixed-length hash (e.g., 32 hex characters).  
-- __Output:__ Variable-length password sequence.  
-- __Scalable parameters:__  
-  - Hidden size (`d_model`)  
-  - Number of encoder/decoder layers  
-  - Attention heads (`nhead`)  
-  - Feedforward layer size (`dim_feedforward`)  
+The **OptimusPrime** model is a custom Transformer encoder-decoder architecture built from scratch in PyTorch.
 
-Example PyTorch model instantiation:
+### Architecture Components:
+
+1. **Embedding Layers**:
+   - Hash byte embedding (vocab size: 257 = 256 byte values + 1 padding)
+   - Password character embedding with special tokens: `<PAD>`, `<SOS>`, `<EOS>`
+
+2. **Transformer Encoder**:
+   - Processes fixed-length hash sequences (16 bytes for MD5)
+   - Multi-head self-attention to learn hash byte relationships
+   - Stacked encoder layers with feedforward networks
+
+3. **Nonlinear Encoder Projection**:
+   - MLP applied after encoder to enrich representations
+   - Learns higher-order statistical dependencies
+
+4. **Transformer Decoder**:
+   - Generates variable-length password sequences
+   - Cross-attention to encoded hash representation
+   - Causal masking for autoregressive generation
+
+5. **Deep Output Projection Head**:
+   - Multi-layer MLP transforms decoder outputs to vocabulary logits
+   - Prevents reliance on shallow linear mappings
+
+### Scalable Parameters:
+
+- `vocab_size`: Hash byte vocabulary (default: 257)
+- `pw_vocab_size`: Password character vocabulary (71 chars including special tokens)
+- `d_model`: Hidden dimension size (default: 256)
+- `n_heads`: Number of attention heads (default: 8)
+- `num_layers`: Encoder and decoder depth (default: 4)
+- `ff_dim`: Feedforward dimension (default: 512)
+- `dropout`: Regularization dropout rate (default: 0.1)
+
+Example model instantiation:
 
 ```python
-    import torch.nn as nn
+from model import OptimusPrime
+from data import ALLOWED_PW_CHARS, PAD_ID, SOS_ID, EOS_ID
 
-    model = nn.Transformer(
-        d_model=512,
-        nhead=8,
-        num_encoder_layers=6,
-        num_decoder_layers=6,
-        dim_feedforward=2048
-    )
+model = OptimusPrime(
+    vocab_size=257,
+    pw_vocab_size=len(ALLOWED_PW_CHARS),
+    pad_id=PAD_ID,
+    sos_id=SOS_ID,
+    eos_id=EOS_ID,
+    d_model=256,
+    n_heads=8,
+    num_layers=4,
+    ff_dim=512,
+    dropout=0.1
+)
 ```
 
 ## <font color='#ffb733'>Training</font>
 
-- __Objective:__ supervised learning on `(hash → password)` pairs.  
-- __Loss function:__ cross-entropy over output characters.  
-- __Optimization:__ Adam or AdamW.  
-- __Batching:__ input/output sequences padded to max length per batch.  
-- __Hardware:__ train with scalable configurations depending on GPU memory.  
+The **Trainer** class orchestrates the complete training workflow with built-in checkpointing, TensorBoard logging, and gradient monitoring.
+
+### Training Features:
+
+- **Objective**: Supervised sequence-to-sequence learning on `(hash → password)` pairs
+- **Loss Function**: Cross-entropy with padding mask (ignores `<PAD>` tokens)
+- **Teacher Forcing**: Decoder receives ground-truth tokens during training
+- **Causal Masking**: Prevents decoder from attending to future tokens
+- **Optimization**: Adam optimizer (configurable learning rate)
+- **Batch Processing**: Variable-length sequences padded dynamically via custom collate function
+
+### Key Components:
+
+1. **Automatic Checkpointing**:
+   - Saves model state every N epochs
+   - Tracks best model based on validation loss
+   - Resume training from last checkpoint
+
+2. **TensorBoard Integration**:
+   - Real-time loss monitoring
+   - Gradient norm tracking
+   - Batch timing metrics
+
+3. **Progress Tracking**:
+   - tqdm progress bars with loss, samples/sec, and time estimates
+   - Epoch summaries with average loss
+
+### Example Training Configuration:
+
+```python
+from trainer import Trainer
+from torch.optim import Adam
+
+optimizer = Adam(model.parameters(), lr=1e-4)
+
+trainer = Trainer(
+    model=model,
+    optimizer=optimizer,
+    dataloader=dataloader,
+    device='cuda',
+    epochs=10,
+    checkpoint_dir=Path('checkpoints'),
+    checkpoint_interval=1,
+    logs='runs/optimus',
+    save=True,  # Enable checkpoint saving
+    load=True   # Resume from checkpoint if exists
+)
+
+trainer.setup()
+trainer.load_checkpoint()
+trainer.train()
+```  
 
 ## <font color='#ffb733'>Evaluation</font>
 
-Metrics used to assess model performance:
+The **Trainer.eval()** method provides comprehensive model evaluation with multiple similarity metrics and TensorBoard logging.
 
-1. __Exact Match Accuracy__  
-```
-    accuracy = (number of correct predictions) / (total predictions)
+### Evaluation Metrics:
+
+1. **Exact Match Accuracy**
+   Percentage of predictions that perfectly match the ground truth password.
+   ```
+   accuracy = (number of correct predictions) / (total predictions)
+   ```
+
+2. **Character Similarity**
+   Positional character matching - measures how many characters match at the same position.
+   ```
+   char_sim = Σ(pred[i] == truth[i]) / max(len(pred), len(truth))
+   ```
+
+3. **Levenshtein Distance (Edit Distance)**
+   Normalized edit distance - minimum insertions, deletions, or substitutions needed.
+   ```
+   levenshtein = 1.0 - (edit_distance / max_length)
+   ```
+   Higher values indicate closer matches (1.0 = perfect match, 0.0 = completely different).
+
+4. **Jaccard Similarity**
+   Character set overlap - measures similarity of character sets regardless of position.
+   ```
+   jaccard = |A ∩ B| / |A ∪ B|
+   ```
+   where A and B are the sets of characters in predicted and true passwords.
+
+### Example Evaluation:
+
+```python
+from torch.utils.data import DataLoader
+from data import Bumblebee, collate_batch
+
+# Load evaluation dataset
+eval_dataset = Bumblebee('data/eval/eval.tsv')
+eval_dataloader = DataLoader(
+    eval_dataset,
+    batch_size=128,
+    shuffle=False,
+    collate_fn=collate_batch
+)
+
+# Run evaluation with TensorBoard logging
+results = trainer.eval(eval_dataloader, step=trainer.start_epoch + trainer.epochs)
+
+print(f"Loss: {results['loss']:.4f}")
+print(f"Exact Match: {results['exact_match']:.4f}")
+print(f"Char Similarity: {results['char_similarity']:.4f}")
+print(f"Levenshtein: {results['levenshtein']:.4f}")
+print(f"Jaccard: {results['jaccard']:.4f}")
 ```
 
-2. __Top-k Accuracy__ (k=5,10)  
-```
-    top_k_accuracy = (# predictions where true password is in top-k guesses) / (total predictions)
-```
-
-3. __Edit Distance (Levenshtein)__  
-    - Counts how many insertions, deletions, or substitutions needed to match prediction to truth.
-
-4. __Jaccard Similarity__  
-```
-    J(A, B) = |A ∩ B| / |A ∪ B|
-```
-
-where A and B are the sets of characters in the true and predicted password.
+All evaluation metrics are automatically logged to TensorBoard under the `Eval/` namespace for visualization.
 
 ## <font color='#ffb733'>Resources</font>
 
