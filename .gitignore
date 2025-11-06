@@ -216,3 +216,4 @@ model/logs/
 hide/
 n.*
 CLAUDE.*
+AGENTS.*

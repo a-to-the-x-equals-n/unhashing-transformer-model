@@ -1,13 +1,22 @@
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 import pandas as pd
 import numpy as np
 import string
 from pathlib import Path
 
+_BASE_PASSWORD_CHARS = sorted(set(string.ascii_letters + string.digits + '!@#$%^&*()-_'))
+_PAD_TOKEN = '<PAD>'
+_SOS_TOKEN = '<SOS>'
+_EOS_TOKEN = '<EOS>'
 
-# def decode_password(tensor):
-#     return ''.join(dataset.itos[i.item()] for i in tensor if i.item() != pad_id)
+# allowed plaintext characters
+# only letters, digits, and specific punctuation
+ALLOWED_PW_CHARS = _BASE_PASSWORD_CHARS + [_PAD_TOKEN, _SOS_TOKEN, _EOS_TOKEN]
+PAD_ID = ALLOWED_PW_CHARS.index(_PAD_TOKEN)
+SOS_ID = ALLOWED_PW_CHARS.index(_SOS_TOKEN)
+EOS_ID = ALLOWED_PW_CHARS.index(_EOS_TOKEN)
+
 
 class Bumblebee(Dataset):
     '''
@@ -15,7 +24,7 @@ class Bumblebee(Dataset):
     
         This dataset prepares the data for a neural network that learns to associate (or predict) passwords from their hash digests.
         It converts both the hashes and plaintexts into numeric tensors that can be efficiently processed by PyTorch models.
-        Each hash in the dataset is assumed to be a fixed-length hexadecimal string (e.g., MD5 → 32 hex chars).
+        Each hash in the dataset is assumed to be a fixed-length hexadecimal string (e.g., MD5 -> 32 hex chars).
         Each plaintext password can vary in length and consists only of characters from a defined "allowed" set.
     
     Parameters:
@@ -25,17 +34,17 @@ class Bumblebee(Dataset):
 
     Attributes:
     -----------
-    vocab_size : int
-        The number of unique byte values (0–255) plus one padding token (for alignment in batching).
-
     pad_id : int
-        The numeric ID representing a padding value (used when aligning different-length sequences).
+        The numeric ID representing the <PAD> token (used when aligning different-length sequences).
+
+    sos_id : int
+        The numeric ID representing the <SOS> (start of sequence) token.
+
+    eos_id : int
+        The numeric ID representing the <EOS> (end of sequence) token.
 
     htoi : dict[str, int]
         A mapping from 2-character hex strings to integer byte values (0–255).
-
-    itoh : dict[int, str]
-        The reverse of `htoi`: maps integers (0–255) back to hex strings.
 
     stoi : dict[str, int]
         A mapping from allowed plaintext characters to their integer token IDs.
@@ -48,11 +57,12 @@ class Bumblebee(Dataset):
 
     passwords : list[np.ndarray]
         A list of NumPy arrays of variable lengths, each containing tokenized password characters.
+
+    Methods:
+    --------
+    decode(tokens: torch.Tensor) -> str
+        Converts a sequence of token IDs back to a plaintext password string.
     '''
-        
-    # allowed plaintext characters
-    # only letters, digits, and specific punctuation
-    _ALLOWED_PW_CHARS = sorted(set(string.ascii_letters + string.digits + '!@#$%^&*()-_')) + ['<EOS>']
 
     def __init__(self, shard: str | Path) -> None:
         '''
@@ -64,22 +74,19 @@ class Bumblebee(Dataset):
             Path to a TSV file with two columns: <hash>\t<password>
         '''
                 
-        # each hash byte can take values 0–255 (256 total)
-        # we add 1 more "padding" token for sequence alignment
-        self.vocab_size = 74 + 1
-        self.pad_id = 74
+        # token IDs
+        self.pad_id = PAD_ID
+        self.sos_id = SOS_ID
+        self.eos_id = EOS_ID
 
-        # build a lookup table for hexadecimal conversion
-        # "htoi" = hex → integer
-        # "itoh" = integer → hex
-        # 02x formats integers as 2-digit lowercase hex strings, e.g., 5 → "05"
-        self.htoi = {f'{i:02x}': i for i in range(256)}
-        self.itoh = {i: f'{i:02x}' for i in range(256)}
+        # lookup table for hexadecimal conversion
+        # "htoi" = hex -> integer
+        self.htoi = {f'{i:02x}': i for i in range(256)} # 02x formats integers as 2-digit hex strings
 
-        # build a lookup table for plaintext characters
-        # stoi = "string to index" → maps each allowed character to a number
-        # itos = "index to string" → reverse mapping for decoding
-        self.stoi = {ch: i for i, ch in enumerate(self._ALLOWED_PW_CHARS)}
+        # lookup table for plaintext characters
+        # stoi = "string to index" -> maps each allowed character to a number
+        # itos = "index to string" -> reverse mapping for decoding
+        self.stoi = {ch: i for i, ch in enumerate(ALLOWED_PW_CHARS)}
         self.itos = {i: ch for ch, i in self.stoi.items()}
 
         # read the input TSV file into a pandas DataFrame
@@ -91,21 +98,21 @@ class Bumblebee(Dataset):
         df['password'] = df['password'].astype(str)
 
         # convert each hash (hexadecimal string) into a NumPy array of bytes
-        # MD5 hashes are 32 hex characters → 16 bytes total
+        # MD5 hashes are 32 hex characters -> 16 bytes total
         # we iterate over the hash string in chunks of 2 characters
         self.hashes = np.stack([
             np.array(
                 [self.htoi[digest[i : i + 2]] for i in range(0, len(digest), 2)],
-                  dtype = np.uint8 # each element fits into one byte → saves memory
+                  dtype = np.uint8 # each element fits into one byte -> saves memory
                   ) 
             for digest in df['hash']
         ])
 
         # convert each password (plaintext string) into a sequence of token IDs
-        # lengths vary → we store them as a list of arrays, not a single 2D matrix
+        # lengths vary -> we store them as a list of arrays, not a single 2D matrix
         self.passwords = [
             np.array(
-                [self.stoi[ch] for ch in pw],
+                [self.sos_id] + [self.stoi[ch] for ch in pw] + [self.eos_id],
                 dtype = np.uint8
             )
             for pw in df['password']
@@ -151,6 +158,32 @@ class Bumblebee(Dataset):
             'hash': torch.from_numpy(self.hashes[i]).long(),
             'password': torch.from_numpy(self.passwords[i]).long()
         }
+
+
+    def decode(self, tokens: torch.Tensor) -> str:
+        '''
+        Decode a sequence of token IDs back to a plaintext password string.
+
+            converts integer token IDs to their corresponding characters
+            stops at the first <PAD> or <EOS> token encountered
+
+        Parameters:
+        -----------
+        tokens : torch.Tensor
+            1D tensor of token IDs representing a password sequence
+
+        Returns:
+        --------
+        str
+            Decoded password string (excludes <PAD>, <EOS>, and anything after them)
+        '''
+        chars = []
+        for token in tokens:
+            token_id = token.item()
+            if token_id == self.pad_id or token_id == self.eos_id:
+                break
+            chars.append(self.itos[token_id])
+        return ''.join(chars)
     
 
 def collate_batch(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
@@ -182,17 +215,14 @@ def collate_batch(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tenso
 
     # extract password tensors (variable length)
     passwords = [item['password'] for item in batch]
-    lengths = torch.tensor([len(pw) for pw in passwords], dtype = torch.long)
 
     # find longest password length in this batch
+    lengths = torch.tensor([len(pw) for pw in passwords], dtype = torch.long)
     max_len = max(lengths).item()
 
     # create a padded tensor for all passwords
     # fill with `pad_id` so model knows which positions are "not real"
-
-    '''NOTE: change back to 256'''
-    pad_id = 74
-    padded = torch.full((len(passwords), max_len), fill_value = pad_id, dtype = torch.long)
+    padded = torch.full((len(passwords), max_len), fill_value = PAD_ID, dtype = torch.long)
 
     # copy each password tensor into the padded batch tensor
     for i, pw in enumerate(passwords):
@@ -201,6 +231,6 @@ def collate_batch(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tenso
     return {
         'hash': hashes,           # [B, 16]
         'password': padded,       # [B, max_len]
-        'lengths': lengths        # [B]
+        # 'lengths': lengths        # [B]
     }
 

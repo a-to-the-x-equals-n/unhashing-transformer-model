@@ -1,9 +1,5 @@
 
 import torch
-from torch.optim import Adam
-from model import OptimusPrime
-from data import Bumblebee, collate_batch
-from torch.utils.data import DataLoader
 from pathlib import Path
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
@@ -17,136 +13,104 @@ YW = '\033[33m'     # yellow
 MG = '\033[35m'     # magenta
 X  = '\033[0m'      # reset
 
+
 class Trainer:
     '''
     Trainer class for OptimusPrime model.
 
     Handles:
-    - Model initialization and device placement
-    - Dataset loading and batching
     - Training loop with progress tracking
     - Checkpoint saving/loading
     - TensorBoard logging
     '''
-
     def __init__(
         self,
-        path: str | Path,
+        model: torch.nn.Module,
+        optimizer: torch.optim.Optimizer,
+        dataloader: torch.utils.data.DataLoader,
+        device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
         epochs: int = 1,
-        batch_size: int = 1024,
-        lr: float = 1e-4,
         checkpoint_dir: Path = Path('checkpoints'),
         checkpoint_interval: int = 1,
-        logs: str = 'runs/optimus'
+        logs: str = 'runs/optimus',
+        save: bool = True,
+        load: bool = True
     ):
         '''
-        Initialize trainer with configuration.
+        Initialize trainer with model, optimizer, and dataloader.
 
         Parameters:
         -----------
-        path : str | Path
-            Path to training data TSV file
+        model : torch.nn.Module
+            The model to train
+
+        optimizer : torch.optim.Optimizer
+            Optimizer for training
+
+        dataloader : torch.utils.data.DataLoader
+            DataLoader with training data
+
+        device : str
+            Device to train on ('cuda' or 'cpu')
+
         epochs : int
             Number of training epochs
-        batch_size : int
-            Batch size for training
-        lr : float
-            Learning rate for Adam optimizer
+
         checkpoint_dir : Path
             Directory to save checkpoints
+
         checkpoint_interval : int
             Save checkpoint every N epochs
+
         logs : str
             TensorBoard log directory
+
+        save : bool
+            Whether to save checkpoints (default: True)
+
+        load : bool
+            Whether to load checkpoints on resume (default: True)
         '''
 
-        # configuration
-        self.path = path
+        # passed components
+        self.model = model
+        self.optimizer = optimizer
+        self.dataloader = dataloader
+        self.device = device
+
+        # training configuration
         self.epochs = epochs
-        self.batch_size = batch_size
-        self.lr = lr
         self.checkpoint_dir = checkpoint_dir
         self.checkpoint_interval = checkpoint_interval
         self.logs = logs
-
-        # components 
-        # (initialized in setup)
-        self.dataset = None
-        self.dataloader = None
-        self.model = None
-        self.optimizer = None
-        self.writer = None
+        self.save = save
+        self.load = load
 
         # training state
         self.start_epoch = 0
         self.best_loss = float('inf')
-
-        # model config
-        self.model_config = {
-            'vocab_size': 257,
-            'pw_vocab_size': 75,
-            'pad_id': 74,
-            'hash_pad_id': 256,
-            'd_model': 256,
-            'n_heads': 8,
-            'num_layers': 4,
-            'ff_dim': 512,
-            'dropout': 0.1
-        }
+        self.writer = None
 
 
     def setup(self):
         '''
-        Setup dataset, model, optimizer, and TensorBoard writer
-        Initializes all components required for training
+        Setup training environment.
 
-            loads dataset from TSV file
-            creates DataLoader with specified batch size
-            instantiates OptimusPrime model and moves to device
-            creates Adam optimizer
+            moves model to device
             initializes TensorBoard SummaryWriter
             creates checkpoint directory if it doesn't exist
         '''
         print(f'\n{BU} [SETUP]{X}')
         print(f'  [total epochs]: {self.epochs}')
-        print(f'  [batch size]: {self.batch_size}')
-        print(f'  [learning rate]: {self.lr}')
-        print(f'  [loading file]: {self.path.name}')
+        print(f'  [device]: {self.device}')
 
-        # device detection
-        print(f'  [cuda??]')
-        if torch.cuda.is_available():
-            self.device = 'cuda'
-            print(f'{GR}   [cuda found]{X}')
-            print(f'{GR}   [using GPU]{X}')
-        else:
-            self.device = 'cpu'
-            print(f'{RD}   [cuda NOT found]{X}')
-            print(f'{RD}   [using CPU]{X}')
-
-        # build dataset and dataloader
-        print(f'  [building dataset]')
-        self.dataset = Bumblebee(self.path)
-
-        print(f'  [building dataloader]')
-        self.dataloader = DataLoader(
-            self.dataset,
-            batch_size = self.batch_size,
-            shuffle = True,
-            collate_fn = collate_batch
-        )
-
-        # build model
-        print(f'  [forging Optimus Prime]')
-        self.model = OptimusPrime(**self.model_config).to(self.device)
-
-        # build optimizer
-        print(f'  [building Adam]')
-        self.optimizer = Adam(self.model.parameters(), lr = self.lr)
+        # move model to device
+        print(f'  [moving model to device]')
+        self.model = self.model.to(self.device)
 
         # initialize TensorBoard
         print(f'  [initializing TensorBoard]')
-        self.writer = SummaryWriter(log_dir =self.logs)
+        self.writer = SummaryWriter(log_dir = self.logs)
 
         # create checkpoint directory
         print(f'  [creating checkpoint directory]')
@@ -160,7 +124,13 @@ class Trainer:
             searches the checkpoint directory for saved checkpoints and loads the latest one based on epoch number
             restores model weights, optimizer state, starting epoch, and best loss value
             if no checkpoint is found, training starts from scratch at epoch 0
+            skips loading if self.load is False
         '''
+        if not self.load:
+            print(f'\n{YW} [CHECKPOINT LOADING DISABLED]{X}')
+            print(f'  [starting fresh training]')
+            return
+
         checkpoints = sorted(self.checkpoint_dir.glob('checkpoint_epoch_*.pt'))
 
         if checkpoints:
@@ -185,8 +155,9 @@ class Trainer:
         '''
         Save a training checkpoint to disk
 
-            saves model state, optimizer state, training metadata, and model configuration to a .pt file
+            saves model state, optimizer state, and training metadata to a .pt file
             checkpoint can be used to resume training from this exact point
+            skips saving if self.save is False
 
         Parameters:
         -----------
@@ -199,6 +170,9 @@ class Trainer:
         global_step : int
             Global training step across all epochs (for TensorBoard continuity).
         '''
+        if not self.save:
+            return
+
         checkpoint_path = self.checkpoint_dir / f'checkpoint_epoch_{epoch + 1}.pt'
         checkpoint = {
             'epoch': epoch,
@@ -206,8 +180,7 @@ class Trainer:
             'optimizer_state_dict': self.optimizer.state_dict(),
             'loss': loss,
             'best_loss': self.best_loss,
-            'global_step': global_step,
-            'config': self.model_config
+            'global_step': global_step
         }
         torch.save(checkpoint, checkpoint_path)
         print(f'    [checkpoint saved]: {checkpoint_path.name}')
@@ -217,9 +190,10 @@ class Trainer:
         '''
         Save the best model encountered so far based on lowest loss.
 
-            updates the best loss value and saves model state, optimizer state, 
-                and configuration to a dedicated "best_model.pt" file
+            updates the best loss value and saves model state and optimizer state
+                to a dedicated "best_model.pt" file
             this file always contains the model with the lowest validation loss
+            skips saving if self.save is False
 
         Parameters:
         -----------
@@ -230,14 +204,19 @@ class Trainer:
             The new best (lowest) loss value.
         '''
         self.best_loss = loss
+
+        if not self.save:
+            print(f'{GR}    [new best]: loss = {self.best_loss:.4f} (not saved){X}')
+            return
+
         best_model_path = self.checkpoint_dir / 'best_model.pt'
         torch.save({
             'epoch': epoch,
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
-            'loss': self.best_loss,
-            'config': self.model_config
+            'loss': self.best_loss
         }, best_model_path)
+        
         print(f'{GR}    [new best saved]: loss = {self.best_loss:.4f}{X}')
 
 
@@ -340,6 +319,124 @@ class Trainer:
             print()
 
 
+    def eval(self, eval_dataloader: torch.utils.data.DataLoader = None, step: int = None) -> dict:
+        '''
+        Evaluate the model on a dataset.
+
+            computes loss, exact match accuracy, and similarity metrics on evaluation data
+            uses greedy decoding (argmax) to generate predictions
+            optionally logs metrics to TensorBoard if step is provided
+
+        Parameters:
+        -----------
+        eval_dataloader : torch.utils.data.DataLoader, optional
+            DataLoader with evaluation data. If None, uses self.dataloader
+
+        step : int, optional
+            Global step or epoch number for TensorBoard logging. If None, metrics are not logged.
+
+        Returns:
+        --------
+        dict
+            Dictionary containing:
+                - 'loss': average loss across all batches
+                - 'exact_match': exact match accuracy (fraction of passwords predicted correctly)
+                - 'char_similarity': average character-level similarity
+                - 'levenshtein': average normalized Levenshtein similarity
+                - 'jaccard': average Jaccard similarity
+                - 'total_samples': total number of samples evaluated
+        '''
+        self.model.eval()
+        dataloader = eval_dataloader if eval_dataloader is not None else self.dataloader
+
+        total_loss = 0.0
+        correct_predictions = 0
+        total_char_sim = 0.0
+        total_levenshtein = 0.0
+        total_jaccard = 0.0
+        total_samples = 0
+
+        print(f'\n{BU} [EVALUATION]{X}')
+
+        with torch.no_grad():
+            progress = tqdm(dataloader, desc = 'Evaluating', leave = True, unit = ' batch')
+
+            for batch in progress:
+                # move data to device
+                hashes = batch['hash'].to(self.device)
+                pw = batch['password'].to(self.device)
+
+                # forward pass
+                logits = self.model(hashes, pw)
+                loss = self.model.compute_loss(logits, pw)
+
+                # accumulate loss
+                total_loss += loss.item()
+
+                # compute predictions (greedy decoding)
+                predictions = logits.argmax(dim = -1)  # [B, T-1]
+
+                # targets: skip <SOS> token
+                targets = pw[:, 1:]  # [B, T-1]
+
+                # exact match accuracy: all tokens must match
+                matches = (predictions == targets).all(dim = 1)
+                correct_predictions += matches.sum().item()
+
+                # compute similarity metrics per sample
+                batch_size = hashes.size(0)
+                for i in range(batch_size):
+                    pred_str = dataloader.dataset.decode(predictions[i])
+                    truth_str = dataloader.dataset.decode(targets[i])
+
+                    total_char_sim += char_similarity(pred_str, truth_str)
+                    total_levenshtein += levenshtein(pred_str, truth_str)
+                    total_jaccard += jaccard(pred_str, truth_str)
+
+                total_samples += batch_size
+
+                # update progress bar
+                current_acc = correct_predictions / total_samples
+                current_char_sim = total_char_sim / total_samples
+                progress.set_postfix_str(
+                    f'loss = {total_loss / (progress.n):.4f}, '
+                    f'exact = {current_acc:.4f}, '
+                    f'char = {current_char_sim:.4f}'
+                )
+
+            progress.close()
+
+        avg_loss = total_loss / len(dataloader)
+        exact_match = correct_predictions / total_samples
+        avg_char_sim = total_char_sim / total_samples
+        avg_levenshtein = total_levenshtein / total_samples
+        avg_jaccard = total_jaccard / total_samples
+
+        print(f'\n [evaluation complete]')
+        print(f'  [loss]: {avg_loss:.4f}')
+        print(f'  [exact match]: {exact_match:.4f} ({correct_predictions}/{total_samples})')
+        print(f'  [char similarity]: {avg_char_sim:.4f}')
+        print(f'  [levenshtein]: {avg_levenshtein:.4f}')
+        print(f'  [jaccard]: {avg_jaccard:.4f}')
+
+        # log to TensorBoard if step is provided
+        if step is not None and self.writer is not None:
+            self.writer.add_scalar('Eval/loss', avg_loss, step)
+            self.writer.add_scalar('Eval/exact_match', exact_match, step)
+            self.writer.add_scalar('Eval/char_similarity', avg_char_sim, step)
+            self.writer.add_scalar('Eval/levenshtein', avg_levenshtein, step)
+            self.writer.add_scalar('Eval/jaccard', avg_jaccard, step)
+
+        return {
+            'loss': avg_loss,
+            'exact_match': exact_match,
+            'char_similarity': avg_char_sim,
+            'levenshtein': avg_levenshtein,
+            'jaccard': avg_jaccard,
+            'total_samples': total_samples
+        }
+
+
     def cleanup(self):
         '''
         Close writer and print summary
@@ -356,8 +453,6 @@ class Trainer:
         print(f'  [upload TensorBoard logs]:\n\t{YW}tensorboard dev upload --logdir runs/optimus_prime{X} \\\
             \n\t\t{YW}--name {X}{CY}"Optimus Prime - MD5 Hash Inversion"{X} \\\
             \n\t\t{YW}--description {X}{CY}"Training run with 1M password dataset"{X}')
-
-
 
 
 OPTIMUS = f'''
@@ -424,23 +519,149 @@ def intro():
     print('\033c', end = '')
 
 
+# ============================================================================
+# Similarity Metrics
+# ============================================================================
+
+def char_similarity(pred: str, truth: str) -> float:
+    '''
+    Calculate character-level positional similarity between prediction and ground truth.
+
+        compares characters at each position and returns the fraction of matching characters
+        shorter string is padded with spaces to match the length of the longer string
+
+    Parameters:
+    -----------
+    pred : str
+        Predicted password string
+
+    truth : str
+        Ground truth password string
+
+    Returns:
+    --------
+    float
+        Similarity score in range [0.0, 1.0] where:
+            1.0 = all characters match at corresponding positions
+            0.0 = no characters match (or prediction is empty)
+    '''
+    if pred == '':
+        return 0.0
+    length = max(len(pred), len(truth))
+    pred = pred.ljust(length)
+    truth = truth.ljust(length)
+    return sum(p == t for p, t in zip(pred, truth)) / length
+
+
+def _levenshtein_helper(a: str, b: str) -> int:
+    '''
+    Compute raw Levenshtein edit distance between two strings using dynamic programming.
+
+        calculates the minimum number of single-character edits (insertions, deletions, substitutions)
+        required to transform string a into string b
+
+    Parameters:
+    -----------
+    a : str
+        First string (automatically swapped to be longer if needed)
+
+    b : str
+        Second string
+
+    Returns:
+    --------
+    int
+        Minimum number of edits required to transform a into b
+    '''
+    if len(a) < len(b):
+        return _levenshtein_helper(b, a)
+    if len(b) == 0:
+        return len(a)
+
+    previous_row = range(len(b) + 1)
+
+    for i, ca in enumerate(a):
+        current_row = [i + 1]
+        for j, cb in enumerate(b):
+            insertions = previous_row[j + 1] + 1
+            deletions = current_row[j] + 1
+            substitutions = previous_row[j] + (ca != cb)
+            current_row.append(min(insertions, deletions, substitutions))
+        previous_row = current_row
+
+    return previous_row[-1]
+
+
+def levenshtein(pred: str, truth: str) -> float:
+    '''
+    Calculate normalized Levenshtein similarity between prediction and ground truth.
+
+        computes edit distance and normalizes by the maximum string length
+        accounts for insertions, deletions, and substitutions
+
+    Parameters:
+    -----------
+    pred : str
+        Predicted password string
+
+    truth : str
+        Ground truth password string
+
+    Returns:
+    --------
+    float
+        Similarity score in range [0.0, 1.0] where:
+            1.0 = strings are identical (zero edit distance)
+            0.0 = maximum edit distance (completely different)
+
+    Notes:
+    ------
+    Normalized as: 1.0 - (edit_distance / max_length)
+    '''
+    if pred == '':
+        return 0.0
+    dist = _levenshtein_helper(pred, truth)
+    max_len = max(len(pred), len(truth))
+    return 1.0 - (dist / max_len) if max_len > 0 else 1.0
+
+
+def jaccard(pred: str, truth: str) -> float:
+    '''
+    Calculate Jaccard similarity coefficient based on unique character sets.
+
+        measures the overlap of unique characters between prediction and ground truth
+        ignores character order and frequency
+        only considers presence/absence
+
+    Parameters:
+    -----------
+    pred : str
+        Predicted password string
+
+    truth : str
+        Ground truth password string
+
+    Returns:
+    --------
+    float
+        Similarity score in range [0.0, 1.0] where:
+            1.0 = identical character sets (all unique chars match)
+            0.0 = disjoint character sets (no common characters)
+
+    Notes:
+    ------
+    Computed as: |intersection| / |union| of character sets
+    '''
+    if pred == '':
+        return 0.0
+    set_pred = set(pred)
+    set_truth = set(truth)
+    intersection = set_pred & set_truth
+    union = set_pred | set_truth
+    return len(intersection) / len(union) if union else 1.0
+
 
 if __name__ == '__main__':
-
     intro()
-
-    # initialize trainer
-    trainer = Trainer(
-        path = Path.cwd().parent / 'data' / 'training' / '1M_train.tsv',
-        epochs = 10,
-        batch_size = 1024,
-        lr = 1e-4,
-        checkpoint_dir = Path('checkpoints'),
-        checkpoint_interval = 1,
-        logs = 'runs/optimus'
-    )
-
-    trainer.setup()             # setup
-    trainer.load_checkpoint()   # load checkpoint if exists
-    trainer.train()             # train
-    trainer.cleanup()           # cleanup
+    print(f'\n{YW}[NOTE]{X}: Use run.ipynb to train the model')
+    print(f'  trainer.py is now a class that needs model/optimizer/dataloader passed to it')

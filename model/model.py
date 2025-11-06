@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from data import PAD_ID, SOS_ID, EOS_ID, ALLOWED_PW_CHARS
 
 
 class OptimusPrime(nn.Module):
@@ -66,11 +65,11 @@ class OptimusPrime(nn.Module):
 
     def __init__(
             self, 
-            vocab_size: int = 257, 
-            pw_vocab_size: int = len(ALLOWED_PW_CHARS), 
-            pad_id: int = PAD_ID, 
-            sos_id: int = SOS_ID,
-            eos_id: int = EOS_ID,
+            vocab_size: int, 
+            pw_vocab_size: int, 
+            pad_id: int, 
+            sos_id: int,
+            eos_id: int,
             d_model: int = 256, 
             n_heads: int = 8, 
             num_layers: int = 4, 
