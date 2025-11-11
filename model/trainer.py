@@ -156,6 +156,41 @@ class Trainer:
             print(f'  [starting fresh training]')
 
 
+    def load_best_model(self):
+        '''
+        Load the best model (lowest loss) from disk.
+
+            loads model weights and optimizer state from best_model.pt
+            useful for resuming training from the best checkpoint or for inference
+            restores best_loss and start_epoch metadata
+
+        Returns:
+        --------
+        bool
+            True if best model was loaded successfully, False otherwise
+        '''
+        best_model_path = self.checkpoint_dir / 'best_model.pt'
+
+        if not best_model_path.exists():
+            print(f'\n{RD} [BEST MODEL NOT FOUND]{X}')
+            print(f'  [path]: {best_model_path}')
+            return False
+
+        print(f'\n{GR} [LOADING BEST MODEL]{X}')
+        print(f'  [loading]: {best_model_path.name}')
+
+        checkpoint = torch.load(best_model_path, map_location = self.device)
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        self.best_loss = checkpoint.get('loss', float('inf'))
+        self.start_epoch = checkpoint.get('epoch', 0) + 1
+
+        print(f'  [best loss]: {self.best_loss:.4f}')
+        print(f'  [from epoch]: {checkpoint.get("epoch", "unknown")}')
+
+        return True
+
+
     def save_checkpoint(self, epoch: int, loss: float, global_step: int):
         '''
         Save a training checkpoint to disk
@@ -208,10 +243,11 @@ class Trainer:
         loss : float
             The new best (lowest) loss value.
         '''
+        previous_best = self.best_loss
         self.best_loss = loss
 
         if not self.save:
-            print(f'{GR}    [new best]: loss = {self.best_loss:.4f} (not saved){X}')
+            print(f'{GR}    [new best]: loss = {previous_best:.4f} -> {self.best_loss:.4f} (not saved){X}')
             return
 
         best_model_path = self.checkpoint_dir / 'best_model.pt'
@@ -221,8 +257,8 @@ class Trainer:
             'optimizer_state_dict': self.optimizer.state_dict(),
             'loss': self.best_loss
         }, best_model_path)
-        
-        print(f'{GR}    [new best saved]: loss = {self.best_loss:.4f}{X}')
+
+        print(f'{GR}    [new best saved]: {previous_best:.4f} -> {self.best_loss:.4f}{X}')
 
 
     def train_epoch(self, epoch: int) -> float:
@@ -288,7 +324,7 @@ class Trainer:
         self.writer.add_scalar('Loss/epoch_final', final_epoch_loss, epoch)
         self.writer.add_scalar('Time/epoch_minutes', epoch_time / 60, epoch)
 
-        print(f'\n [epoch {epoch + 1} / {self.epochs} complete]')
+        print(f'\n [epoch {epoch + 1} / {self.start_epoch + self.epochs} complete]')
         print(f'  [loss]: {final_epoch_loss:.4f}')
         print(f'  [time]: {epoch_time / 60:.2f} minutes')
 
@@ -324,6 +360,7 @@ class Trainer:
 
             # run evaluation every 10 epochs
             if self.eval_dataloader is not None and (epoch + 1) % 10 == 0:
+                print(f'\n{CY} [STARTING EVALUATION at epoch {epoch + 1}]{X}')
                 self.eval(self.eval_dataloader, step = epoch + 1)
 
             print()
