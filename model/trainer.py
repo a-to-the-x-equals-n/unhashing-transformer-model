@@ -326,6 +326,7 @@ class Trainer:
             computes loss, exact match accuracy, and similarity metrics on evaluation data
             uses greedy decoding (argmax) to generate predictions
             optionally logs metrics to TensorBoard if step is provided
+            saves predictions to TSV every 10 epochs when step is divisible by 10
 
         Parameters:
         -----------
@@ -356,7 +357,13 @@ class Trainer:
         total_jaccard = 0.0
         total_samples = 0
 
+        # determine if we should save predictions (every 10 epochs)
+        save_predictions = step is not None and step % 10 == 0
+        predictions_list = [] if save_predictions else None
+
         print(f'\n{BU} [EVALUATION]{X}')
+        if save_predictions:
+            print(f'  [saving predictions for epoch {step}]')
 
         with torch.no_grad():
             progress = tqdm(dataloader, desc = 'Evaluating', leave = True, unit = ' batch')
@@ -393,13 +400,27 @@ class Trainer:
                     total_levenshtein += levenshtein(pred_str, truth_str)
                     total_jaccard += jaccard(pred_str, truth_str)
 
+                    # collect predictions for saving if needed
+                    if save_predictions:
+                        # convert hash bytes back to hex string
+                        hash_bytes = hashes[i].cpu().numpy()
+                        hash_hex = ''.join(f'{byte:02x}' for byte in hash_bytes)
+
+                        predictions_list.append({
+                            'epoch': step,
+                            'hash': hash_hex,
+                            'ground_truth': truth_str,
+                            'prediction': pred_str
+                        })
+
                 total_samples += batch_size
 
                 # update progress bar
                 current_acc = correct_predictions / total_samples
                 current_char_sim = total_char_sim / total_samples
+                num_batches_processed = progress.n if progress.n > 0 else 1
                 progress.set_postfix_str(
-                    f'loss = {total_loss / (progress.n):.4f}, '
+                    f'loss = {total_loss / num_batches_processed:.4f}, '
                     f'exact = {current_acc:.4f}, '
                     f'char = {current_char_sim:.4f}'
                 )
@@ -418,6 +439,18 @@ class Trainer:
         print(f'  [char similarity]: {avg_char_sim:.4f}')
         print(f'  [levenshtein]: {avg_levenshtein:.4f}')
         print(f'  [jaccard]: {avg_jaccard:.4f}')
+
+        # save predictions to TSV if this is a milestone epoch
+        if save_predictions and predictions_list:
+            import pandas as pd
+            predictions_dir = Path(__file__).parent / 'predictions'
+            predictions_dir.mkdir(exist_ok = True)
+
+            predictions_file = predictions_dir / f'predictions_{step}.tsv'
+            df = pd.DataFrame(predictions_list)
+            df.to_csv(predictions_file, sep = '\t', index = False)
+
+            print(f'  [predictions saved]: {predictions_file.name}')
 
         # log to TensorBoard if step is provided
         if step is not None and self.writer is not None:
@@ -618,11 +651,15 @@ def levenshtein(pred: str, truth: str) -> float:
     ------
     Normalized as: 1.0 - (edit_distance / max_length)
     '''
-    if pred == '':
+    # if both are empty, they're identical
+    if len(pred) == 0 and len(truth) == 0:
+        return 1.0
+    # if only prediction is empty, complete failure
+    if len(pred) == 0:
         return 0.0
     dist = _levenshtein_helper(pred, truth)
     max_len = max(len(pred), len(truth))
-    return 1.0 - (dist / max_len) if max_len > 0 else 1.0
+    return 1.0 - (dist / max_len)
 
 
 def jaccard(pred: str, truth: str) -> float:
