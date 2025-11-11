@@ -44,6 +44,16 @@ class OptimusPrime(nn.Module):
     dropout : float, optional
         Dropout probability applied to projection layers for regularization (default: 0.1).
 
+    label_smoothing : float, optional
+        Label smoothing factor for cross-entropy loss (default: 0.1).
+        Prevents overconfidence by distributing probability mass to non-target classes.
+        Higher values (e.g., 0.1-0.2) reduce mode collapse but may slow convergence.
+
+    repetition_penalty : float, optional
+        Penalty weight for token repetition in generated sequences (default: 0.0).
+        Encourages diversity by penalizing repeated n-grams.
+        Typical values: 0.01-0.1 (0.0 = disabled).
+
     Notes:
     ------
     The model operates in five conceptual stages:
@@ -64,19 +74,26 @@ class OptimusPrime(nn.Module):
     '''
 
     def __init__(
-            self, 
-            vocab_size: int, 
-            pw_vocab_size: int, 
-            pad_id: int, 
+            self,
+            vocab_size: int,
+            pw_vocab_size: int,
+            pad_id: int,
             sos_id: int,
             eos_id: int,
-            d_model: int = 256, 
-            n_heads: int = 8, 
-            num_layers: int = 4, 
-            ff_dim: int = 512, 
-            dropout: float = 0.1
+            d_model: int = 256,
+            n_heads: int = 8,
+            num_layers: int = 4,
+            ff_dim: int = 512,
+            dropout: float = 0.1,
+            label_smoothing: float = 0.1,
+            repetition_penalty: float = 0.0
     ) -> None:
         super().__init__()
+
+        # anti-collapse hyperparameters
+        self.label_smoothing = label_smoothing
+        self.repetition_penalty = repetition_penalty
+        self.training_temperature = 1.0  # will be set by trainer
 
         # ---- embedding layers ----
         # convert integer-based tokens into dense vector embeddings that can carry meaning
@@ -196,7 +213,7 @@ class OptimusPrime(nn.Module):
 
     def compute_loss(self, logits: torch.Tensor, pw_batch: torch.Tensor) -> torch.Tensor:
         '''
-        Compute cross-entropy loss while ignoring padded positions.
+        Compute cross-entropy loss with label smoothing and repetition penalty.
 
         Parameters:
         -----------
@@ -209,18 +226,70 @@ class OptimusPrime(nn.Module):
         Returns:
         --------
         torch.Tensor
-            Scalar loss averaged over non-padded tokens
+            Scalar loss averaged over non-padded tokens (includes label smoothing + repetition penalty)
         '''
 
         # targets: skip <SOS> (first token)
         targets = pw_batch[:, 1:]  # [B, T-1]
-    
-        B, T, V = logits.shape  # batch size, sequence length, vocabulary size
-        logits = logits.reshape(B * T, V)
-        targets = targets.reshape(B * T)
 
-        # ignore_index masks <PAD>, but <EOS> is now learned
-        return F.cross_entropy(logits, targets, ignore_index = self.pad_id)
+        B, T, V = logits.shape  # batch size, sequence length, vocabulary size
+        logits_flat = logits.reshape(B * T, V)
+        targets_flat = targets.reshape(B * T)
+
+        # Cross-entropy loss with label smoothing
+        ce_loss = F.cross_entropy(
+            logits_flat,
+            targets_flat,
+            ignore_index=self.pad_id,
+            label_smoothing=self.label_smoothing
+        )
+
+        # Add repetition penalty if enabled
+        if self.repetition_penalty > 0.0:
+            rep_loss = self._compute_repetition_penalty(logits, targets)
+            total_loss = ce_loss + self.repetition_penalty * rep_loss
+        else:
+            total_loss = ce_loss
+
+        return total_loss
+
+
+    def _compute_repetition_penalty(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        '''
+        Compute repetition penalty to discourage mode collapse.
+
+        Penalizes sequences where the same token appears repeatedly or follows predictable patterns.
+        Encourages diversity by adding loss proportional to consecutive repeated tokens.
+
+        Parameters:
+        -----------
+        logits : torch.Tensor
+            Model output logits, shape [B, T, V]
+
+        targets : torch.Tensor
+            Target tokens, shape [B, T]
+
+        Returns:
+        --------
+        torch.Tensor
+            Scalar repetition penalty loss
+        '''
+        B, T = targets.shape
+
+        if T < 2:
+            return torch.tensor(0.0, device=targets.device)
+
+        # Count consecutive repeated tokens in targets
+        # Compare each token with the next token
+        repeated = (targets[:, :-1] == targets[:, 1:]).float()  # [B, T-1]
+
+        # Mask out padding positions
+        non_pad_mask = (targets[:, :-1] != self.pad_id).float()  # [B, T-1]
+
+        # Compute average repetition rate (ignoring padding)
+        repetition_rate = (repeated * non_pad_mask).sum() / (non_pad_mask.sum() + 1e-8)
+
+        return repetition_rate
 
 
     @torch.no_grad()
