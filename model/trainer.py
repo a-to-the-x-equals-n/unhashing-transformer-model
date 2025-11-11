@@ -34,7 +34,8 @@ class Trainer:
         checkpoint_interval: int = 1,
         logs: str = 'runs/optimus',
         save: bool = True,
-        load: bool = True,
+        load_mode: str = 'latest',
+        max_checkpoints: int = 5,
         eval_dataloader: torch.utils.data.DataLoader = None
     ):
         '''
@@ -69,8 +70,13 @@ class Trainer:
         save : bool
             Whether to save checkpoints (default: True)
 
-        load : bool
-            Whether to load checkpoints on resume (default: True)
+        load_mode : str
+            How to load checkpoints: 'latest' (most recent checkpoint), 'best' (lowest loss), or 'none' (start fresh)
+            Default: 'latest'
+
+        max_checkpoints : int
+            Maximum number of checkpoint files to keep (oldest are deleted). Does not affect best_model.pt.
+            Default: 5
 
         eval_dataloader : torch.utils.data.DataLoader, optional
             DataLoader with evaluation data. If provided, eval will run automatically every 10 epochs during training.
@@ -89,7 +95,8 @@ class Trainer:
         self.checkpoint_interval = checkpoint_interval
         self.logs = logs
         self.save = save
-        self.load = load
+        self.load_mode = load_mode
+        self.max_checkpoints = max_checkpoints
 
         # training state
         self.start_epoch = 0
@@ -122,37 +129,96 @@ class Trainer:
         self.checkpoint_dir.mkdir(exist_ok = True)
 
 
-    def load_checkpoint(self):
+    def load(self, load_mode: str | None = None):
         '''
-        Load the most recent checkpoint if available to resume training
+        Load checkpoint based on self.load_mode setting.
 
-            searches the checkpoint directory for saved checkpoints and loads the latest one based on epoch number
-            restores model weights, optimizer state, starting epoch, and best loss value
-            if no checkpoint is found, training starts from scratch at epoch 0
-            skips loading if self.load is False
+            Modes:
+            - 'latest': Load most recent checkpoint_epoch_*.pt
+            - 'best': Load best_model.pt (lowest loss), with epoch from latest checkpoint
+            - 'none': Start fresh training from epoch 0
+
+            When loading 'best' mode:
+            - Model weights come from best_model.pt
+            - Epoch number comes from the most recent checkpoint_epoch_*.pt
+            - This ensures we continue from the correct epoch while using best weights
+
+            Restores model weights, optimizer state, starting epoch, and best loss value
         '''
-        if not self.load:
+        self.load_mode = self.load_mode if not load_mode else load_mode
+        
+        if self.load_mode == 'none':
             print(f'\n{YW} [CHECKPOINT LOADING DISABLED]{X}')
+            print(f'  [load_mode]: none')
             print(f'  [starting fresh training]')
             return
 
-        checkpoints = sorted(self.checkpoint_dir.glob('checkpoint_epoch_*.pt'))
+        # Get checkpoints and sort by epoch number (not alphabetically)
+        # This prevents "epoch_9" from coming after "epoch_19" in string sorting
+        checkpoints = list(self.checkpoint_dir.glob('checkpoint_epoch_*.pt'))
+        checkpoints.sort(key=lambda p: int(p.stem.split('_')[-1]))
 
-        if checkpoints:
-            latest_checkpoint = checkpoints[-1]
-            print(f'\n{YW} [CHECKPOINT FOUND]{X}')
-            print(f'  [loading]: {latest_checkpoint.name}')
+        # MODE: 'latest' - load most recent checkpoint
+        if self.load_mode == 'latest':
+            if checkpoints:
+                latest_checkpoint = checkpoints[-1]
+                print(f'\n{YW} [LOADING LATEST CHECKPOINT]{X}')
+                print(f'  [load_mode]: latest')
+                print(f'  [loading]: {latest_checkpoint.name}')
 
-            checkpoint = torch.load(latest_checkpoint, map_location = self.device)
-            self.model.load_state_dict(checkpoint['model_state_dict'])
-            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            self.start_epoch = checkpoint['epoch'] + 1
-            self.best_loss = checkpoint.get('best_loss', float('inf'))
+                checkpoint = torch.load(latest_checkpoint, map_location = self.device)
+                self.model.load_state_dict(checkpoint['model_state_dict'])
+                self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                self.start_epoch = checkpoint['epoch'] + 1
+                self.best_loss = checkpoint.get('best_loss', float('inf'))
 
-            print(f'  [resuming from epoch]: {self.start_epoch}')
-            print(f'  [previous best loss]: {self.best_loss:.4f}')
+                print(f'  [resuming from epoch]: {self.start_epoch}')
+                print(f'  [best loss so far]: {self.best_loss:.4f}')
+            else:
+                print(f'\n{YW} [NO CHECKPOINT FOUND]{X}')
+                print(f'  [load_mode]: latest')
+                print(f'  [starting fresh training]')
+
+        # MODE: 'best' - load best model weights, but get epoch from latest checkpoint
+        elif self.load_mode == 'best':
+            best_model_path = self.checkpoint_dir / 'best_model.pt'
+
+            if not best_model_path.exists():
+                print(f'\n{RD} [BEST MODEL NOT FOUND]{X}')
+                print(f'  [load_mode]: best')
+                print(f'  [path]: {best_model_path}')
+                print(f'  [starting fresh training]')
+                return
+
+            # Load best model weights
+            print(f'\n{GR} [LOADING BEST MODEL]{X}')
+            print(f'  [load_mode]: best')
+            print(f'  [loading weights]: {best_model_path.name}')
+
+            best_checkpoint = torch.load(best_model_path, map_location = self.device)
+            self.model.load_state_dict(best_checkpoint['model_state_dict'])
+            self.optimizer.load_state_dict(best_checkpoint['optimizer_state_dict'])
+            self.best_loss = best_checkpoint.get('loss', float('inf'))
+
+            # Get epoch from latest checkpoint (for proper continuation)
+            if checkpoints:
+                latest_checkpoint = checkpoints[-1]
+                print(f'  [getting epoch from]: {latest_checkpoint.name}')
+
+                epoch_checkpoint = torch.load(latest_checkpoint, map_location = self.device)
+                self.start_epoch = epoch_checkpoint['epoch'] + 1
+
+                print(f'  [resuming from epoch]: {self.start_epoch}')
+                print(f'  [best model loss]: {self.best_loss:.4f}')
+            else:
+                print(f'  {YW}[WARNING]: No checkpoint found for epoch tracking{X}')
+                print(f'  [starting from epoch]: 0')
+                self.start_epoch = 0
+
         else:
-            print(f'\n{YW} [NO CHECKPOINT FOUND]{X}')
+            print(f'\n{RD} [INVALID LOAD MODE]{X}')
+            print(f'  [load_mode]: {self.load_mode}')
+            print(f'  [valid modes]: latest, best, none')
             print(f'  [starting fresh training]')
 
 
@@ -193,10 +259,11 @@ class Trainer:
 
     def save_checkpoint(self, epoch: int, loss: float, global_step: int):
         '''
-        Save a training checkpoint to disk
+        Save a training checkpoint to disk and cleanup old checkpoints.
 
             saves model state, optimizer state, and training metadata to a .pt file
             checkpoint can be used to resume training from this exact point
+            automatically removes oldest checkpoints if more than max_checkpoints exist
             skips saving if self.save is False
 
         Parameters:
@@ -224,6 +291,38 @@ class Trainer:
         }
         torch.save(checkpoint, checkpoint_path)
         print(f'    [checkpoint saved]: {checkpoint_path.name}')
+
+        # Cleanup old checkpoints (keep only max_checkpoints most recent)
+        self._cleanup_old_checkpoints()
+
+
+    def _cleanup_old_checkpoints(self):
+        '''
+        Remove old checkpoint files to keep only the most recent N checkpoints.
+
+            keeps the max_checkpoints most recent checkpoint_epoch_*.pt files
+            does NOT delete best_model.pt
+            silently handles errors (e.g., file already deleted)
+
+        Example:
+            If max_checkpoints = 5 and there are 7 checkpoints, the oldest 2 are deleted
+        '''
+        # Get checkpoints and sort by epoch number (not alphabetically)
+        checkpoints = list(self.checkpoint_dir.glob('checkpoint_epoch_*.pt'))
+        checkpoints.sort(key=lambda p: int(p.stem.split('_')[-1]))
+
+        # Only cleanup if we exceed the limit
+        if len(checkpoints) <= self.max_checkpoints:
+            return
+
+        # Delete oldest checkpoints
+        num_to_delete = len(checkpoints) - self.max_checkpoints
+        for checkpoint in checkpoints[:num_to_delete]:
+            try:
+                checkpoint.unlink()
+                print(f'    [cleanup]: removed {checkpoint.name}')
+            except Exception as e:
+                print(f'    {YW}[WARNING]: Could not delete {checkpoint.name}: {e}{X}')
 
 
     def save_best_model(self, epoch: int, loss: float):
@@ -420,18 +519,42 @@ class Trainer:
                 hashes = batch['hash'].to(self.device)
                 pw = batch['password'].to(self.device)
 
-                # forward pass
+                # forward pass for loss computation (teacher forcing)
                 logits = self.model(hashes, pw)
                 loss = self.model.compute_loss(logits, pw)
 
                 # accumulate loss
                 total_loss += loss.item()
 
-                # compute predictions (greedy decoding)
-                predictions = logits.argmax(dim = -1)  # [B, T-1]
+                # AUTOREGRESSIVE GENERATION (true inference, no teacher forcing)
+                # generate predictions token-by-token using model's own outputs
+                generated = self.model.generate(hashes, max_length = 32, temperature = 1.0)  # [B, T]
+
+                # remove <SOS> token from generated sequences for comparison
+                predictions = generated[:, 1:]  # [B, T-1] (skip <SOS>)
 
                 # targets: skip <SOS> token
                 targets = pw[:, 1:]  # [B, T-1]
+
+                # align lengths 
+                # (predictions may be shorter/longer than targets)
+                max_len = max(predictions.size(1), targets.size(1))
+                if predictions.size(1) < max_len:
+                    # pad predictions with PAD tokens
+                    padding = torch.full((predictions.size(0), max_len - predictions.size(1)),
+                                        self.model.pad_id, dtype=torch.long, device=self.device)
+                    predictions = torch.cat([predictions, padding], dim=1)
+                if targets.size(1) < max_len:
+                    # pad targets with PAD tokens
+                    padding = torch.full((targets.size(0), max_len - targets.size(1)),
+                                        self.model.pad_id, dtype=torch.long, device=self.device)
+                    targets = torch.cat([targets, padding], dim=1)
+
+                # truncate to same length 
+                # (take minimum)
+                min_len = min(predictions.size(1), targets.size(1))
+                predictions = predictions[:, :min_len]
+                targets = targets[:, :min_len]
 
                 # exact match accuracy: all tokens must match
                 matches = (predictions == targets).all(dim = 1)

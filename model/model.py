@@ -221,3 +221,92 @@ class OptimusPrime(nn.Module):
 
         # ignore_index masks <PAD>, but <EOS> is now learned
         return F.cross_entropy(logits, targets, ignore_index = self.pad_id)
+
+
+    @torch.no_grad()
+    def generate(self, hash_batch: torch.Tensor, max_length: int = 32, temperature: float = 1.0) -> torch.Tensor:
+        '''
+        Autoregressively generate passwords from hash inputs (inference mode).
+
+            generates one token at a time using the model's own predictions as context for subsequent tokens. 
+            this represents true model performance.
+
+        Parameters:
+        -----------
+        hash_batch : torch.Tensor
+            input hash tokens, shape [B, 16]
+
+        max_length : int, optional
+            maximum number of tokens to generate (default: 32)
+            generation stops early if <EOS> is predicted
+
+        temperature : float, optional
+            sampling temperature for controlling randomness (default: 1.0)
+                temperature = 1.0: standard sampling from softmax distribution
+                temperature < 1.0: more conservative (sharper distribution, less random)
+                temperature > 1.0: more diverse (flatter distribution, more random)
+                temperature → 0: equivalent to greedy argmax
+
+        Returns:
+        --------
+        torch.Tensor
+            generated password token IDs, shape [B, T] where T <= max_length
+            includes <SOS> at start, <EOS> at end (or truncated at max_length)
+
+        Notes:
+        ------
+            uses greedy decoding when temperature = 1.0 (argmax)
+            generation is autoregressive: each token depends only on previously generated tokens
+            this method uses @torch.no_grad() for efficiency (no gradient computation needed)
+            all sequences in the batch generate independently
+        '''
+
+        self.eval()  # ensure model is in eval mode
+        B = hash_batch.size(0)
+        device = hash_batch.device
+
+        # encode hash once 
+        # (doesn't change during generation)
+        hash_emb = self.hash_embed(hash_batch)           # [B, 16, d_model]
+        hash_encoded = self.encoder(hash_emb)            # [B, 16, d_model]
+
+        # initialize generated sequence with <SOS> token
+        generated = torch.full((B, 1), self.sos_id, dtype=torch.long, device=device)  # [B, 1]
+
+        # generate tokens one at a time
+        for _ in range(max_length - 1):  # -1 because we already have <SOS>
+            # embed current sequence
+            pw_emb = self.pw_embed(generated)  # [B, current_len, d_model]
+
+            # create causal mask for current sequence length
+            current_len = generated.size(1)
+            causal_mask = torch.triu(torch.ones(current_len, current_len), diagonal=1).bool().to(device)
+
+            # decode with current sequence
+            pw_decoded = self.decoder(
+                tgt=pw_emb,
+                memory=hash_encoded,
+                tgt_mask=causal_mask
+            )  # [B, current_len, d_model]
+
+            # get logits for next token 
+            # (only need last position)
+            next_token_logits = self.output_head(pw_decoded[:, -1, :])  # [B, pw_vocab_size]
+
+            # apply temperature and sample/select next token
+            if temperature == 1.0:
+                # greedy decoding (deterministic)
+                next_token = next_token_logits.argmax(dim=-1, keepdim=True)  # [B, 1]
+            else:
+                # temperature-scaled sampling
+                next_token_probs = F.softmax(next_token_logits / temperature, dim=-1)  # [B, pw_vocab_size]
+                next_token = torch.multinomial(next_token_probs, num_samples=1)  # [B, 1]
+
+            # append next token to sequence
+            generated = torch.cat([generated, next_token], dim=1)  # [B, current_len + 1]
+
+            # check if all sequences have generated <EOS>
+            if (next_token == self.eos_id).all():
+                break
+
+        return generated  # [B, T] where T <= max_length
