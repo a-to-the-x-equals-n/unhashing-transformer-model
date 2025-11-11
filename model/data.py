@@ -218,7 +218,7 @@ def collate_batch(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tenso
 
     # find longest password length in this batch
     lengths = torch.tensor([len(pw) for pw in passwords], dtype = torch.long)
-    max_len = max(lengths).item()
+    max_len = lengths.max().item()
 
     # create a padded tensor for all passwords
     # fill with `pad_id` so model knows which positions are "not real"

@@ -34,7 +34,8 @@ class Trainer:
         checkpoint_interval: int = 1,
         logs: str = 'runs/optimus',
         save: bool = True,
-        load: bool = True
+        load: bool = True,
+        eval_dataloader: torch.utils.data.DataLoader = None
     ):
         '''
         Initialize trainer with model, optimizer, and dataloader.
@@ -70,12 +71,16 @@ class Trainer:
 
         load : bool
             Whether to load checkpoints on resume (default: True)
+
+        eval_dataloader : torch.utils.data.DataLoader, optional
+            DataLoader with evaluation data. If provided, eval will run automatically every 10 epochs during training.
         '''
 
         # passed components
         self.model = model
         self.optimizer = optimizer
         self.dataloader = dataloader
+        self.eval_dataloader = eval_dataloader
         self.device = device
 
         # training configuration
@@ -298,6 +303,7 @@ class Trainer:
                 calls train_epoch() to perform forward/backward passes
                 saves checkpoint every N epochs (based on self.checkpoint_interval)
                 saves best model if current epoch loss is lowest so far
+                runs evaluation every 10 epochs if eval_dataloader is provided
 
             all training metrics are logged to TensorBoard
             tqdm shows progress bars with loss and grad norms
@@ -315,6 +321,10 @@ class Trainer:
             # save best
             if epoch_loss < self.best_loss:
                 self.save_best_model(epoch, epoch_loss)
+
+            # run evaluation every 10 epochs
+            if self.eval_dataloader is not None and (epoch + 1) % 10 == 0:
+                self.eval(self.eval_dataloader, step = epoch + 1)
 
             print()
 
@@ -446,7 +456,7 @@ class Trainer:
             predictions_dir = Path(__file__).parent / 'predictions'
             predictions_dir.mkdir(exist_ok = True)
 
-            predictions_file = predictions_dir / f'predictions_{step}.tsv'
+            predictions_file = predictions_dir / f'predictions_ep_{step}.tsv'
             df = pd.DataFrame(predictions_list)
             df.to_csv(predictions_file, sep = '\t', index = False)
 
