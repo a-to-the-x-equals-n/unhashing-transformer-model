@@ -36,7 +36,9 @@ class Trainer:
         save: bool = True,
         load_mode: str = 'latest',
         max_checkpoints: int = 5,
-        eval_dataloader: torch.utils.data.DataLoader = None
+        eval_dataloader: torch.utils.data.DataLoader = None,
+        warmup_steps: int = 0,
+        use_scheduler: bool = False
     ):
         '''
         Initialize trainer with model, optimizer, and dataloader.
@@ -80,6 +82,15 @@ class Trainer:
 
         eval_dataloader : torch.utils.data.DataLoader, optional
             DataLoader with evaluation data. If provided, eval will run automatically every 10 epochs during training.
+
+        warmup_steps : int, optional
+            Number of warmup steps for learning rate schedule (default: 0 = no warmup)
+            Recommended: 500-2000 steps for large models
+            Learning rate linearly increases from 0 to base_lr during warmup
+
+        use_scheduler : bool, optional
+            Whether to use cosine annealing scheduler after warmup (default: False)
+            If True, learning rate decays from base_lr to 0 using cosine schedule
         '''
 
         # passed components
@@ -97,11 +108,14 @@ class Trainer:
         self.save = save
         self.load_mode = load_mode
         self.max_checkpoints = max_checkpoints
+        self.warmup_steps = warmup_steps
+        self.use_scheduler = use_scheduler
 
         # training state
         self.start_epoch = 0
         self.best_loss = float('inf')
         self.writer = None
+        self.scheduler = None
 
 
     def setup(self):
@@ -111,6 +125,7 @@ class Trainer:
             moves model to device
             initializes TensorBoard SummaryWriter
             creates checkpoint directory if it doesn't exist
+            sets up learning rate scheduler if enabled
         '''
         print(f'\n{BU} [SETUP]{X}')
         print(f'  [total epochs]: {self.epochs}')
@@ -127,6 +142,30 @@ class Trainer:
         # create checkpoint directory
         print(f'  [creating checkpoint directory]')
         self.checkpoint_dir.mkdir(exist_ok = True)
+
+        # setup learning rate scheduler
+        if self.use_scheduler:
+            print(f'  [setting up learning rate scheduler]')
+            total_steps = self.epochs * len(self.dataloader)
+            print(f'    - total training steps: {total_steps:,}')
+            print(f'    - warmup steps: {self.warmup_steps:,}')
+            print(f'    - cosine decay: enabled')
+
+            # Get base learning rate from optimizer
+            self.base_lr = self.optimizer.param_groups[0]['lr']
+
+            # Create cosine annealing scheduler
+            from torch.optim.lr_scheduler import CosineAnnealingLR
+            self.scheduler = CosineAnnealingLR(
+                self.optimizer,
+                T_max=total_steps - self.warmup_steps,
+                eta_min=0
+            )
+        elif self.warmup_steps > 0:
+            print(f'  [setting up warmup schedule]')
+            print(f'    - warmup steps: {self.warmup_steps:,}')
+            print(f'    - no decay after warmup')
+            self.base_lr = self.optimizer.param_groups[0]['lr']
 
 
     def load(self, load_mode: str | None = None):
@@ -360,6 +399,25 @@ class Trainer:
         print(f'{GR}    [new best saved]: {previous_best:.4f} -> {self.best_loss:.4f}{X}')
 
 
+    def _update_learning_rate(self, global_step: int):
+        '''
+        Update learning rate based on warmup and scheduler settings.
+
+        Parameters:
+        -----------
+        global_step : int
+            Current training step across all epochs
+        '''
+        # Warmup phase: linearly increase LR from 0 to base_lr
+        if self.warmup_steps > 0 and global_step < self.warmup_steps:
+            lr_scale = float(global_step + 1) / float(max(1, self.warmup_steps))
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = self.base_lr * lr_scale
+        # Scheduler phase: apply cosine annealing after warmup
+        elif self.scheduler is not None and global_step >= self.warmup_steps:
+            self.scheduler.step()
+
+
     def train_epoch(self, epoch: int) -> float:
         '''
         Train for one epoch.
@@ -398,6 +456,10 @@ class Trainer:
             grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm = 1.0) # clip grad norms to stabilize training
             self.optimizer.step()       # update weights
 
+            # update learning rate (warmup + scheduler)
+            global_step = epoch * len(self.dataloader) + i
+            self._update_learning_rate(global_step)
+
             # accumulate loss
             total_loss += loss.item()
             avg_loss = total_loss / (i + 1) # average over batches processed so far
@@ -412,7 +474,8 @@ class Trainer:
             self.writer.add_scalar('Time/batch_seconds', batch_time, global_step)
 
             # update progress bar
-            progress.set_postfix_str(f'loss={avg_loss:.4f}, grad={grad_norm.item():.3f}')
+            current_lr = self.optimizer.param_groups[0]['lr']
+            progress.set_postfix_str(f'loss={avg_loss:.4f}, grad={grad_norm.item():.3f}, lr={current_lr:.2e}')
 
         # close progress bar for this epoch
         progress.close()
@@ -465,7 +528,7 @@ class Trainer:
             print()
 
 
-    def eval(self, eval_dataloader: torch.utils.data.DataLoader = None, step: int = None) -> dict:
+    def eval(self, eval_dataloader: torch.utils.data.DataLoader = None, temperature: float = 1.0, repetition_penalty: float = 1.2, step: int = None) -> dict:
         '''
         Evaluate the model on a dataset.
 
@@ -528,7 +591,8 @@ class Trainer:
 
                 # AUTOREGRESSIVE GENERATION (true inference, no teacher forcing)
                 # generate predictions token-by-token using model's own outputs
-                generated = self.model.generate(hashes, max_length = 32, temperature = 1.0)  # [B, T]
+                # Note: repetition_penalty is applied during inference only (not during training loss)
+                generated = self.model.generate(hashes, max_length = 32, temperature = temperature, repetition_penalty = repetition_penalty)  # [B, T]
 
                 # remove <SOS> token from generated sequences for comparison
                 predictions = generated[:, 1:]  # [B, T-1] (skip <SOS>)

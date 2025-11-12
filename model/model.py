@@ -293,11 +293,11 @@ class OptimusPrime(nn.Module):
 
 
     @torch.no_grad()
-    def generate(self, hash_batch: torch.Tensor, max_length: int = 32, temperature: float = 1.0) -> torch.Tensor:
+    def generate(self, hash_batch: torch.Tensor, max_length: int = 32, temperature: float = 1.0, repetition_penalty: float = 0.0) -> torch.Tensor:
         '''
         Autoregressively generate passwords from hash inputs (inference mode).
 
-            generates one token at a time using the model's own predictions as context for subsequent tokens. 
+            generates one token at a time using the model's own predictions as context for subsequent tokens.
             this represents true model performance.
 
         Parameters:
@@ -315,6 +315,14 @@ class OptimusPrime(nn.Module):
                 temperature < 1.0: more conservative (sharper distribution, less random)
                 temperature > 1.0: more diverse (flatter distribution, more random)
                 temperature → 0: equivalent to greedy argmax
+
+        repetition_penalty : float, optional
+            penalty applied to tokens that were already generated (default: 0.0 = disabled)
+            typical values: 1.0-2.0 where:
+                1.0 = no penalty
+                1.2 = mild penalty (recommended for passwords)
+                2.0 = strong penalty
+            penalized_logit = original_logit / penalty_value
 
         Returns:
         --------
@@ -334,7 +342,7 @@ class OptimusPrime(nn.Module):
         B = hash_batch.size(0)
         device = hash_batch.device
 
-        # encode hash once 
+        # encode hash once
         # (doesn't change during generation)
         hash_emb = self.hash_embed(hash_batch)           # [B, 16, d_model]
         hash_encoded = self.encoder(hash_emb)            # [B, 16, d_model]
@@ -358,9 +366,19 @@ class OptimusPrime(nn.Module):
                 tgt_mask=causal_mask
             )  # [B, current_len, d_model]
 
-            # get logits for next token 
+            # get logits for next token
             # (only need last position)
             next_token_logits = self.output_head(pw_decoded[:, -1, :])  # [B, pw_vocab_size]
+
+            # apply repetition penalty if enabled
+            if repetition_penalty > 1.0:
+                # penalize tokens that were already generated
+                # (divide logits by penalty factor to reduce their probability)
+                for i in range(B):
+                    # get unique tokens already generated in this sequence (excluding <SOS>)
+                    already_generated = generated[i, 1:].unique()  # skip <SOS> token
+                    # reduce logits for already-generated tokens
+                    next_token_logits[i, already_generated] = next_token_logits[i, already_generated] / repetition_penalty
 
             # apply temperature and sample/select next token
             if temperature == 1.0:

@@ -8,6 +8,7 @@ This doc serves as a record of the journey when creating this project; including
 - [Back and Fourths on filetype](#back-and-fourths-on-filetype)
   - [The Re-Tokenizing](#the-re-tokenizing)
   - [Model Collapse](#model-collapse)
+  - [Learning Rate](#learning-rate)
   - [`Dataset` \& `Dataloader` Refreshers](#dataset--dataloader-refreshers)
 
 
@@ -57,6 +58,10 @@ I was using __teacher forcing__ in [`model/trainer.py`](../model/trainer.py)--`l
 >root cause: The model hasn't learned to generate coherently because it's always given the _correct_ context. When you look at predictions via `argmax`, you're seeing what it predicts at each position GIVEN the correct
 >prefix—but the model is biased toward predicting '1' when it doesn't have good signal from the hash.
 
+
+### Learning Rate
+
+realized learning rate was fixed, added learning rate warmup decy using cosine decay.
 
 ### `Dataset` & `Dataloader` Refreshers
 
