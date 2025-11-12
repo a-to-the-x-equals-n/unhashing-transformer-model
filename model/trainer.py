@@ -192,8 +192,7 @@ class Trainer:
             print(f'  [starting fresh training]')
             return
 
-        # Get checkpoints and sort by epoch number (not alphabetically)
-        # This prevents "epoch_9" from coming after "epoch_19" in string sorting
+        # get checkpoints and sort by epoch number
         checkpoints = list(self.checkpoint_dir.glob('checkpoint_epoch_*.pt'))
         checkpoints.sort(key=lambda p: int(p.stem.split('_')[-1]))
 
