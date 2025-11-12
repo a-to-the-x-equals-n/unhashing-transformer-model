@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
 class OptimusPrime(nn.Module):
     '''
     Transformer encoder–decoder model that learns to map a hash digest to corresponding plaintext password.
@@ -49,11 +48,6 @@ class OptimusPrime(nn.Module):
         Prevents overconfidence by distributing probability mass to non-target classes.
         Higher values (e.g., 0.1-0.2) reduce mode collapse but may slow convergence.
 
-    repetition_penalty : float, optional
-        Penalty weight for token repetition in generated sequences (default: 0.0).
-        Encourages diversity by penalizing repeated n-grams.
-        Typical values: 0.01-0.1 (0.0 = disabled).
-
     Notes:
     ------
     The model operates in five conceptual stages:
@@ -85,15 +79,12 @@ class OptimusPrime(nn.Module):
             num_layers: int = 4,
             ff_dim: int = 512,
             dropout: float = 0.1,
-            label_smoothing: float = 0.1,
-            repetition_penalty: float = 0.0
+            label_smoothing: float = 0.1
     ) -> None:
         super().__init__()
 
-        # anti-collapse hyperparameters
+        # anti-collapse hyperparameter
         self.label_smoothing = label_smoothing
-        self.repetition_penalty = repetition_penalty
-        self.training_temperature = 1.0  # will be set by trainer
 
         # ---- embedding layers ----
         # convert integer-based tokens into dense vector embeddings that can carry meaning
@@ -213,7 +204,7 @@ class OptimusPrime(nn.Module):
 
     def compute_loss(self, logits: torch.Tensor, pw_batch: torch.Tensor) -> torch.Tensor:
         '''
-        Compute cross-entropy loss with label smoothing and repetition penalty.
+        Compute cross-entropy loss with label smoothing.
 
         Parameters:
         -----------
@@ -226,7 +217,7 @@ class OptimusPrime(nn.Module):
         Returns:
         --------
         torch.Tensor
-            Scalar loss averaged over non-padded tokens (includes label smoothing + repetition penalty)
+            Scalar loss averaged over non-padded tokens
         '''
 
         # targets: skip <SOS> (first token)
@@ -236,64 +227,19 @@ class OptimusPrime(nn.Module):
         logits_flat = logits.reshape(B * T, V)
         targets_flat = targets.reshape(B * T)
 
-        # Cross-entropy loss with label smoothing
-        ce_loss = F.cross_entropy(
+        # cross-entropy loss with label smoothing
+        loss = F.cross_entropy(
             logits_flat,
             targets_flat,
-            ignore_index=self.pad_id,
-            label_smoothing=self.label_smoothing
+            ignore_index = self.pad_id,
+            label_smoothing = self.label_smoothing
         )
 
-        # Add repetition penalty if enabled
-        if self.repetition_penalty > 0.0:
-            rep_loss = self._compute_repetition_penalty(logits, targets)
-            total_loss = ce_loss + self.repetition_penalty * rep_loss
-        else:
-            total_loss = ce_loss
-
-        return total_loss
-
-
-    def _compute_repetition_penalty(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        '''
-        Compute repetition penalty to discourage mode collapse.
-
-        Penalizes sequences where the same token appears repeatedly or follows predictable patterns.
-        Encourages diversity by adding loss proportional to consecutive repeated tokens.
-
-        Parameters:
-        -----------
-        logits : torch.Tensor
-            Model output logits, shape [B, T, V]
-
-        targets : torch.Tensor
-            Target tokens, shape [B, T]
-
-        Returns:
-        --------
-        torch.Tensor
-            Scalar repetition penalty loss
-        '''
-        B, T = targets.shape
-
-        if T < 2:
-            return torch.tensor(0.0, device=targets.device)
-
-        # Count consecutive repeated tokens in targets
-        # Compare each token with the next token
-        repeated = (targets[:, :-1] == targets[:, 1:]).float()  # [B, T-1]
-
-        # Mask out padding positions
-        non_pad_mask = (targets[:, :-1] != self.pad_id).float()  # [B, T-1]
-
-        # Compute average repetition rate (ignoring padding)
-        repetition_rate = (repeated * non_pad_mask).sum() / (non_pad_mask.sum() + 1e-8)
-
-        return repetition_rate
+        return loss
 
 
     @torch.no_grad()
-    def generate(self, hash_batch: torch.Tensor, max_length: int = 32, temperature: float = 1.0, repetition_penalty: float = 0.0) -> torch.Tensor:
+    def generate(self, hash_batch: torch.Tensor, max_length: int = 32, temperature: float = 1.0, repetition_penalty: float = 1.0) -> torch.Tensor:
         '''
         Autoregressively generate passwords from hash inputs (inference mode).
 
@@ -348,7 +294,7 @@ class OptimusPrime(nn.Module):
         hash_encoded = self.encoder(hash_emb)            # [B, 16, d_model]
 
         # initialize generated sequence with <SOS> token
-        generated = torch.full((B, 1), self.sos_id, dtype=torch.long, device=device)  # [B, 1]
+        generated = torch.full((B, 1), self.sos_id, dtype = torch.long, device = device)  # [B, 1]
 
         # generate tokens one at a time
         for _ in range(max_length - 1):  # -1 because we already have <SOS>
@@ -361,9 +307,9 @@ class OptimusPrime(nn.Module):
 
             # decode with current sequence
             pw_decoded = self.decoder(
-                tgt=pw_emb,
-                memory=hash_encoded,
-                tgt_mask=causal_mask
+                tgt = pw_emb,
+                memory = hash_encoded,
+                tgt_mask = causal_mask
             )  # [B, current_len, d_model]
 
             # get logits for next token
@@ -371,7 +317,7 @@ class OptimusPrime(nn.Module):
             next_token_logits = self.output_head(pw_decoded[:, -1, :])  # [B, pw_vocab_size]
 
             # apply repetition penalty if enabled
-            if repetition_penalty > 1.0:
+            if repetition_penalty >= 1.0:
                 # penalize tokens that were already generated
                 # (divide logits by penalty factor to reduce their probability)
                 for i in range(B):
@@ -383,17 +329,18 @@ class OptimusPrime(nn.Module):
             # apply temperature and sample/select next token
             if temperature == 1.0:
                 # greedy decoding (deterministic)
-                next_token = next_token_logits.argmax(dim=-1, keepdim=True)  # [B, 1]
+                next_token = next_token_logits.argmax(dim = -1, keepdim = True)  # [B, 1]
             else:
                 # temperature-scaled sampling
-                next_token_probs = F.softmax(next_token_logits / temperature, dim=-1)  # [B, pw_vocab_size]
+                next_token_probs = F.softmax(next_token_logits / temperature, dim = -1)  # [B, pw_vocab_size]
                 next_token = torch.multinomial(next_token_probs, num_samples=1)  # [B, 1]
 
             # append next token to sequence
-            generated = torch.cat([generated, next_token], dim=1)  # [B, current_len + 1]
+            generated = torch.cat([generated, next_token], dim = 1)  # [B, current_len + 1]
 
             # check if all sequences have generated <EOS>
             if (next_token == self.eos_id).all():
                 break
 
         return generated  # [B, T] where T <= max_length
+    

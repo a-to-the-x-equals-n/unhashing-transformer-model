@@ -33,12 +33,13 @@ class Trainer:
         checkpoint_dir: Path = Path('checkpoints'),
         checkpoint_interval: int = 1,
         logs: str = 'runs/optimus',
-        save: bool = True,
+        keep: bool = True,
         load_mode: str = 'latest',
         max_checkpoints: int = 5,
         eval_dataloader: torch.utils.data.DataLoader = None,
-        warmup_steps: int = 0,
-        use_scheduler: bool = False
+        eval_checkpoint: int = 10,
+        temperature: float = 1.0,
+        repetition_penalty: float = 1.5
     ):
         '''
         Initialize trainer with model, optimizer, and dataloader.
@@ -49,7 +50,7 @@ class Trainer:
             The model to train
 
         optimizer : torch.optim.Optimizer
-            Optimizer for training
+            Optimizer for training (e.g., AdamWarlock with built-in scheduling)
 
         dataloader : torch.utils.data.DataLoader
             DataLoader with training data
@@ -69,7 +70,7 @@ class Trainer:
         logs : str
             TensorBoard log directory
 
-        save : bool
+        keep : bool
             Whether to save checkpoints (default: True)
 
         load_mode : str
@@ -83,89 +84,43 @@ class Trainer:
         eval_dataloader : torch.utils.data.DataLoader, optional
             DataLoader with evaluation data. If provided, eval will run automatically every 10 epochs during training.
 
-        warmup_steps : int, optional
-            Number of warmup steps for learning rate schedule (default: 0 = no warmup)
-            Recommended: 500-2000 steps for large models
-            Learning rate linearly increases from 0 to base_lr during warmup
-
-        use_scheduler : bool, optional
-            Whether to use cosine annealing scheduler after warmup (default: False)
-            If True, learning rate decays from base_lr to 0 using cosine schedule
+        Notes:
+        ------
+        Learning rate scheduling is now handled by the optimizer (e.g., AdamWarlock).
+        Configure warmup and decay when creating the optimizer, not in Trainer.
         '''
 
+        print(f'\n [{BU}TRAINER INIT{X}]')
+
         # passed components
-        self.model = model
+        self.device = device
+        self.model = model.to(device)  # move model to device
         self.optimizer = optimizer
         self.dataloader = dataloader
         self.eval_dataloader = eval_dataloader
-        self.device = device
 
         # training configuration
         self.epochs = epochs
         self.checkpoint_dir = checkpoint_dir
+        self.checkpoint_dir.mkdir(exist_ok = True)
         self.checkpoint_interval = checkpoint_interval
         self.logs = logs
-        self.save = save
+        self.keep = keep
         self.load_mode = load_mode
         self.max_checkpoints = max_checkpoints
-        self.warmup_steps = warmup_steps
-        self.use_scheduler = use_scheduler
+        self.eval_checkpoint = eval_checkpoint
+
+        # eval
+        self.temperature = temperature
+        self.repetition_penalty = repetition_penalty
 
         # training state
         self.start_epoch = 0
         self.best_loss = float('inf')
-        self.writer = None
-        self.scheduler = None
-
-
-    def setup(self):
-        '''
-        Setup training environment.
-
-            moves model to device
-            initializes TensorBoard SummaryWriter
-            creates checkpoint directory if it doesn't exist
-            sets up learning rate scheduler if enabled
-        '''
-        print(f'\n{BU} [SETUP]{X}')
-        print(f'  [total epochs]: {self.epochs}')
-        print(f'  [device]: {self.device}')
-
-        # move model to device
-        print(f'  [moving model to device]')
-        self.model = self.model.to(self.device)
 
         # initialize TensorBoard
-        print(f'  [initializing TensorBoard]')
+        print(f'  [init TensorBoard]')
         self.writer = SummaryWriter(log_dir = self.logs)
-
-        # create checkpoint directory
-        print(f'  [creating checkpoint directory]')
-        self.checkpoint_dir.mkdir(exist_ok = True)
-
-        # setup learning rate scheduler
-        if self.use_scheduler:
-            print(f'  [setting up learning rate scheduler]')
-            total_steps = self.epochs * len(self.dataloader)
-            print(f'    - total training steps: {total_steps:,}')
-            print(f'    - warmup steps: {self.warmup_steps:,}')
-            print(f'    - cosine decay: enabled')
-
-            # Get base learning rate from optimizer
-            self.base_lr = self.optimizer.param_groups[0]['lr']
-
-            # Create cosine annealing scheduler
-            from torch.optim.lr_scheduler import CosineAnnealingLR
-            self.scheduler = CosineAnnealingLR(
-                self.optimizer,
-                T_max=total_steps - self.warmup_steps,
-                eta_min=0
-            )
-        elif self.warmup_steps > 0:
-            print(f'  [setting up warmup schedule]')
-            print(f'    - warmup steps: {self.warmup_steps:,}')
-            print(f'    - no decay after warmup')
-            self.base_lr = self.optimizer.param_groups[0]['lr']
 
 
     def load(self, load_mode: str | None = None):
@@ -260,42 +215,7 @@ class Trainer:
             print(f'  [starting fresh training]')
 
 
-    def load_best_model(self):
-        '''
-        Load the best model (lowest loss) from disk.
-
-            loads model weights and optimizer state from best_model.pt
-            useful for resuming training from the best checkpoint or for inference
-            restores best_loss and start_epoch metadata
-
-        Returns:
-        --------
-        bool
-            True if best model was loaded successfully, False otherwise
-        '''
-        best_model_path = self.checkpoint_dir / 'best_model.pt'
-
-        if not best_model_path.exists():
-            print(f'\n{RD} [BEST MODEL NOT FOUND]{X}')
-            print(f'  [path]: {best_model_path}')
-            return False
-
-        print(f'\n{GR} [LOADING BEST MODEL]{X}')
-        print(f'  [loading]: {best_model_path.name}')
-
-        checkpoint = torch.load(best_model_path, map_location = self.device)
-        self.model.load_state_dict(checkpoint['model_state_dict'])
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        self.best_loss = checkpoint.get('loss', float('inf'))
-        self.start_epoch = checkpoint.get('epoch', 0) + 1
-
-        print(f'  [best loss]: {self.best_loss:.4f}')
-        print(f'  [from epoch]: {checkpoint.get("epoch", "unknown")}')
-
-        return True
-
-
-    def save_checkpoint(self, epoch: int, loss: float, global_step: int):
+    def save(self, epoch: int, loss: float, global_step: int | None = None):
         '''
         Save a training checkpoint to disk and cleanup old checkpoints.
 
@@ -315,23 +235,37 @@ class Trainer:
         global_step : int
             Global training step across all epochs (for TensorBoard continuity).
         '''
+
         if not self.save:
             return
+        
+        # save BEST
+        if not global_step:
+            previous_best = self.best_loss
+            self.best_loss = loss
+            best_model_path = self.checkpoint_dir / f'best_epoch_{epoch + 1}.pt'
 
-        checkpoint_path = self.checkpoint_dir / f'checkpoint_epoch_{epoch + 1}.pt'
-        checkpoint = {
-            'epoch': epoch,
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'loss': loss,
-            'best_loss': self.best_loss,
-            'global_step': global_step
-        }
-        torch.save(checkpoint, checkpoint_path)
-        print(f'    [checkpoint saved]: {checkpoint_path.name}')
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': self.model.state_dict(),
+                'optimizer_state_dict': self.optimizer.state_dict(),
+                'loss': self.best_loss
+            }, best_model_path)
 
-        # Cleanup old checkpoints (keep only max_checkpoints most recent)
-        self._cleanup_old_checkpoints()
+            print(f'    [{GR}new best saved{X}]: {previous_best:.4f} -> {self.best_loss:.4f}')
+
+        # save CHECKPOINT
+        else:
+            checkpoint_path = self.checkpoint_dir / f'checkpoint_epoch_{epoch + 1}.pt'
+            checkpoint = {
+                'epoch': epoch,
+                'model_state_dict': self.model.state_dict(),
+                'optimizer_state_dict': self.optimizer.state_dict(),
+                'loss': loss,
+                'best_loss': self.best_loss,
+                'global_step': global_step
+            }
+            torch.save(checkpoint, checkpoint_path)
 
 
     def _cleanup_old_checkpoints(self):
@@ -346,75 +280,28 @@ class Trainer:
             If max_checkpoints = 5 and there are 7 checkpoints, the oldest 2 are deleted
         '''
         # Get checkpoints and sort by epoch number (not alphabetically)
-        checkpoints = list(self.checkpoint_dir.glob('checkpoint_epoch_*.pt'))
-        checkpoints.sort(key=lambda p: int(p.stem.split('_')[-1]))
 
-        # Only cleanup if we exceed the limit
-        if len(checkpoints) <= self.max_checkpoints:
-            return
+        tensorfiles = ['checkpoint_epoch_*.pt', 'best_epoch_*.pt']
+        for f in tensorfiles:
+            checkpoints = list(self.checkpoint_dir.glob(f))
+            checkpoints.sort(key = lambda p: int(p.stem.split('_')[-1]))
 
-        # Delete oldest checkpoints
-        num_to_delete = len(checkpoints) - self.max_checkpoints
-        for checkpoint in checkpoints[:num_to_delete]:
-            try:
-                checkpoint.unlink()
-                print(f'    [cleanup]: removed {checkpoint.name}')
-            except Exception as e:
-                print(f'    {YW}[WARNING]: Could not delete {checkpoint.name}: {e}{X}')
+            if f == 'best_epoch_*.pt':
+                if len(checkpoints) <= 3:
+                    return
+            else:
+                # Only cleanup if we exceed the limit
+                if len(checkpoints) <= self.max_checkpoints:
+                    return
 
-
-    def save_best_model(self, epoch: int, loss: float):
-        '''
-        Save the best model encountered so far based on lowest loss.
-
-            updates the best loss value and saves model state and optimizer state
-                to a dedicated "best_model.pt" file
-            this file always contains the model with the lowest validation loss
-            skips saving if self.save is False
-
-        Parameters:
-        -----------
-        epoch : int
-            Epoch number where this best loss was achieved.
-
-        loss : float
-            The new best (lowest) loss value.
-        '''
-        previous_best = self.best_loss
-        self.best_loss = loss
-
-        if not self.save:
-            print(f'{GR}    [new best]: loss = {previous_best:.4f} -> {self.best_loss:.4f} (not saved){X}')
-            return
-
-        best_model_path = self.checkpoint_dir / 'best_model.pt'
-        torch.save({
-            'epoch': epoch,
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'loss': self.best_loss
-        }, best_model_path)
-
-        print(f'{GR}    [new best saved]: {previous_best:.4f} -> {self.best_loss:.4f}{X}')
-
-
-    def _update_learning_rate(self, global_step: int):
-        '''
-        Update learning rate based on warmup and scheduler settings.
-
-        Parameters:
-        -----------
-        global_step : int
-            Current training step across all epochs
-        '''
-        # Warmup phase: linearly increase LR from 0 to base_lr
-        if self.warmup_steps > 0 and global_step < self.warmup_steps:
-            lr_scale = float(global_step + 1) / float(max(1, self.warmup_steps))
-            for param_group in self.optimizer.param_groups:
-                param_group['lr'] = self.base_lr * lr_scale
-        # Scheduler phase: apply cosine annealing after warmup
-        elif self.scheduler is not None and global_step >= self.warmup_steps:
-            self.scheduler.step()
+            # Delete oldest checkpoints
+            num_to_delete = len(checkpoints) - self.max_checkpoints
+            for checkpoint in checkpoints[:num_to_delete]:
+                try:
+                    checkpoint.unlink()
+                    print(f'    [cleanup]: removed {checkpoint.name}')
+                except Exception as e:
+                    print(f'    [{YW}WARNING{X}]: Could not delete {checkpoint.name}: {e}')
 
 
     def train_epoch(self, epoch: int) -> float:
@@ -455,9 +342,9 @@ class Trainer:
             grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm = 1.0) # clip grad norms to stabilize training
             self.optimizer.step()       # update weights
 
-            # update learning rate (warmup + scheduler)
-            global_step = epoch * len(self.dataloader) + i
-            self._update_learning_rate(global_step)
+            # update learning rate scheduler (if AdamWarlock optimizer)
+            if hasattr(self.optimizer, 'step_scheduler'):
+                self.optimizer.step_scheduler()
 
             # accumulate loss
             total_loss += loss.item()
@@ -467,13 +354,16 @@ class Trainer:
             global_step = epoch * len(self.dataloader) + i
             self.writer.add_scalar('Loss/batch', loss.item(), global_step)
             self.writer.add_scalar('Loss/epoch_avg', avg_loss, global_step)
-            self.writer.add_scalar('Learning_rate', self.optimizer.param_groups[0]['lr'], global_step)
+
+            # get learning rate (use .lr property if available, otherwise fallback to param_groups)
+            current_lr = self.optimizer.lr if hasattr(self.optimizer, 'lr') else self.optimizer.param_groups[0]['lr']
+            self.writer.add_scalar('Learning_rate', current_lr, global_step)
+
             self.writer.add_scalar('Gradient/norm', grad_norm.item(), global_step)
             batch_time = time.time() - batch_start_time
             self.writer.add_scalar('Time/batch_seconds', batch_time, global_step)
 
             # update progress bar
-            current_lr = self.optimizer.param_groups[0]['lr']
             progress.set_postfix_str(f'loss={avg_loss:.4f}, grad={grad_norm.item():.3f}, lr={current_lr:.2e}')
 
         # close progress bar for this epoch
@@ -489,6 +379,7 @@ class Trainer:
         print(f'  [loss]: {final_epoch_loss:.4f}')
         print(f'  [time]: {epoch_time / 60:.2f} minutes')
 
+        self._cleanup_old_checkpoints()
         return final_epoch_loss, global_step
 
 
@@ -513,21 +404,31 @@ class Trainer:
 
             # save checkpoint
             if (epoch + 1) % self.checkpoint_interval == 0:
-                self.save_checkpoint(epoch, epoch_loss, global_step)
+                self.save(epoch, epoch_loss, global_step)
 
             # save best
             if epoch_loss < self.best_loss:
-                self.save_best_model(epoch, epoch_loss)
+                self.save(epoch, epoch_loss)
 
             # run evaluation every 10 epochs
-            if self.eval_dataloader is not None and (epoch + 1) % 10 == 0:
+            if self.eval_dataloader is not None and (epoch + 1) % self.eval_checkpoint == 0:
                 print(f'\n{CY} [STARTING EVALUATION at epoch {epoch + 1}]{X}')
                 self.eval(self.eval_dataloader, step = epoch + 1)
 
             print()
 
+        self.writer.close()
+        print(f'\n{BU} [COMPLETE]{X}')
+        print(f'  [best loss]: {self.best_loss:.4f}')
+        print(f'  [checkpoints saved]: {self.checkpoint_dir}\n')
+        print(f' [TensorBoard]: {YW}tensorboard --logdir=runs{X}')
+        print(f'  [TensorBoard dashboard]: http://localhost:6006')
+        print(f'  [upload TensorBoard logs]:\n\t{YW}tensorboard dev upload --logdir runs/optimus_prime{X} \\\
+            \n\t\t{YW}--name {X}{CY}"Optimus Prime - MD5 Hash Inversion"{X} \\\
+            \n\t\t{YW}--description {X}{CY}"Training run with 1M password dataset"{X}')
 
-    def eval(self, eval_dataloader: torch.utils.data.DataLoader = None, temperature: float = 1.0, repetition_penalty: float = 1.2, step: int = None) -> dict:
+
+    def eval(self, eval_dataloader: torch.utils.data.DataLoader = None, temperature: float = None, repetition_penalty: float = None, step: int = None) -> dict:
         '''
         Evaluate the model on a dataset.
 
@@ -557,6 +458,8 @@ class Trainer:
         '''
         self.model.eval()
         dataloader = eval_dataloader if eval_dataloader is not None else self.dataloader
+        penalty = self.repetition_penalty if not repetition_penalty else repetition_penalty
+        temp = self.temperature if not temperature else temperature
 
         total_loss = 0.0
         correct_predictions = 0
@@ -566,7 +469,7 @@ class Trainer:
         total_samples = 0
 
         # determine if we should save predictions (every 10 epochs)
-        save_predictions = step is not None and step % 10 == 0
+        save_predictions = step is not None and step % self.eval_checkpoint == 0
         predictions_list = [] if save_predictions else None
 
         print(f'\n{BU} [EVALUATION]{X}')
@@ -591,7 +494,7 @@ class Trainer:
                 # AUTOREGRESSIVE GENERATION (true inference, no teacher forcing)
                 # generate predictions token-by-token using model's own outputs
                 # Note: repetition_penalty is applied during inference only (not during training loss)
-                generated = self.model.generate(hashes, max_length = 32, temperature = temperature, repetition_penalty = repetition_penalty)  # [B, T]
+                generated = self.model.generate(hashes, max_length = 32, temperature = temp, repetition_penalty = penalty)  # [B, T]
 
                 # remove <SOS> token from generated sequences for comparison
                 predictions = generated[:, 1:]  # [B, T-1] (skip <SOS>)
@@ -604,14 +507,12 @@ class Trainer:
                 max_len = max(predictions.size(1), targets.size(1))
                 if predictions.size(1) < max_len:
                     # pad predictions with PAD tokens
-                    padding = torch.full((predictions.size(0), max_len - predictions.size(1)),
-                                        self.model.pad_id, dtype=torch.long, device=self.device)
-                    predictions = torch.cat([predictions, padding], dim=1)
+                    padding = torch.full((predictions.size(0), max_len - predictions.size(1)), self.model.pad_id, dtype = torch.long, device = self.device)
+                    predictions = torch.cat([predictions, padding], dim = 1)
                 if targets.size(1) < max_len:
                     # pad targets with PAD tokens
-                    padding = torch.full((targets.size(0), max_len - targets.size(1)),
-                                        self.model.pad_id, dtype=torch.long, device=self.device)
-                    targets = torch.cat([targets, padding], dim=1)
+                    padding = torch.full((targets.size(0), max_len - targets.size(1)), self.model.pad_id, dtype = torch.long, device = self.device)
+                    targets = torch.cat([targets, padding], dim = 1)
 
                 # truncate to same length 
                 # (take minimum)
@@ -666,13 +567,6 @@ class Trainer:
         avg_levenshtein = total_levenshtein / total_samples
         avg_jaccard = total_jaccard / total_samples
 
-        print(f'\n [evaluation complete]')
-        print(f'  [loss]: {avg_loss:.4f}')
-        print(f'  [exact match]: {exact_match:.4f} ({correct_predictions}/{total_samples})')
-        print(f'  [char similarity]: {avg_char_sim:.4f}')
-        print(f'  [levenshtein]: {avg_levenshtein:.4f}')
-        print(f'  [jaccard]: {avg_jaccard:.4f}')
-
         # save predictions to TSV if this is a milestone epoch
         if save_predictions and predictions_list:
             import pandas as pd
@@ -693,6 +587,13 @@ class Trainer:
             self.writer.add_scalar('Eval/levenshtein', avg_levenshtein, step)
             self.writer.add_scalar('Eval/jaccard', avg_jaccard, step)
 
+        print(f"\n [{CY}eval results{X}]:")
+        print(f"   [loss]: {avg_loss:.4f}")
+        print(f"   [exact match]: {exact_match:.4f}")
+        print(f"   [char similarity]: {avg_char_sim:.4f}")
+        print(f"   [levenshtein]: {avg_levenshtein:.4f}")
+        print(f"   [jaccard]: {avg_jaccard:.4f}")
+
         return {
             'loss': avg_loss,
             'exact_match': exact_match,
@@ -703,86 +604,8 @@ class Trainer:
         }
 
 
-    def cleanup(self):
-        '''
-        Close writer and print summary
-        
-            displays the terminal commands for tensorboard
-            local and the shared upload
-        '''
-        self.writer.close()
-        print(f'\n{BU} [COMPLETE]{X}')
-        print(f'  [best loss]: {self.best_loss:.4f}')
-        print(f'  [checkpoints saved]: {self.checkpoint_dir}\n')
-        print(f' [TensorBoard]: {YW}tensorboard --logdir=runs{X}')
-        print(f'  [TensorBoard dashboard]: http://localhost:6006')
-        print(f'  [upload TensorBoard logs]:\n\t{YW}tensorboard dev upload --logdir runs/optimus_prime{X} \\\
-            \n\t\t{YW}--name {X}{CY}"Optimus Prime - MD5 Hash Inversion"{X} \\\
-            \n\t\t{YW}--description {X}{CY}"Training run with 1M password dataset"{X}')
 
 
-OPTIMUS = f'''
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣶⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢰⠀⠀⠀⠀⠀⣤⣤⣤⠀⠀⠀⠀⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⡇⠀⣠⡶⢿⡇⢿⣿⡏⢳⣦⠀⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣾⡛⣆⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣧⣼⣿⣴⣋⡽⠮⠿⢭⣟⣏⣷⣿⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢻⣧⠘⡆⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⡼⣇⣿⡿⠶⣶⣿⣟⡛⣷⣿⢠⠙⣧⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡈⣏⠇⢹⡀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⡟⢹⠁⣿⠋⠉⢹⠉⠙⣿⡇⣾⣀⣾⠀⢀⣤⡀⢀⡀⠀⠀⢀⣠⣴⣾⠛⢻⡛⢻⡄⢀⣳⡀⢀⣠⠄⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣾⣷⣾⢀⣿⡇⠀⠸⠀⠀⣿⣧⡽⠿⣟⣺⣭⠴⢿⡏⣩⣷⡾⢛⣭⣴⣿⣇⠘⣿⣷⣿⡛⠉⢻⣟⣷⠄⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⠿⢿⣟⣿⣿⡦⣶⣪⡭⠿⣚⣫⣭⣽⣶⡄⠀⢸⡇⣿⡙⣿⣿⣿⣿⣿⣿⣆⠹⣿⣿⣷⡀⠀⢿⡉⠁⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣀⣀⣀⣤⣶⣿⠿⠛⣉⣭⣶⣾⣿⠿⠟⠛⠉⠉⢻⠀⢸⣷⣿⣇⢻⡿⣿⣿⣿⣿⠟⠀⠹⣿⣿⠃⠀⠘⣷⡀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣤⣦⣼⣿⠿⠛⣋⡁⣼⢠⣿⡿⠛⠉⠁⠀⠀⢀⡀⢀⣴⣾⠀⢸⣿⡇⢻⡄⠙⠿⠻⠛⠁⠀⢀⣠⣽⣿⣇⡀⠀⠸⣧⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢠⣾⠿⣛⣭⣴⡾⠟⠛⣧⣿⢸⡿⠀⠀⠀⠀⣰⣿⣿⣷⣾⣿⣿⠀⢸⡏⣇⢸⣷⡀⠀⢀⣠⣴⣾⠿⠛⣿⢻⣿⣹⡀⠀⢻⣆⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣴⡟⣦⠀⠀⠀⢀⡿⣵⡿⠛⠉⣡⣶⣤⣄⣿⣯⢸⣇⠀⠀⢠⣾⣿⡿⣿⣿⣿⣿⡿⠀⢸⡇⢻⡼⣿⣷⣶⠿⠛⠉⠀⠀⠀⠸⡇⣿⣿⣧⠀⠘⣿⡀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⡇⢹⠀⢀⣠⣼⣿⣿⠀⢀⣼⣿⣿⣿⣿⡇⣿⢸⣿⣀⣀⣿⡿⠿⠶⠚⠛⠉⠉⠀⠀⢸⡇⠀⢻⣾⣝⣿⡆⠀⢀⣠⡴⠖⠛⢻⡾⣿⣿⣆⠀⢹⡇⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣇⣼⡾⠟⠋⣿⢻⣇⣤⣌⠻⢿⣿⣿⣿⠃⢿⠀⠉⠉⠁⠀⠀⠀⣀⣤⡤⠶⠶⠒⠚⣻⣷⣄⠈⣿⣿⣿⣿⡞⠉⠀⠀⠀⠀⠀⣿⢿⣿⣾⣋⣽⠇⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣹⠏⠀⠀⠀⣿⢿⣿⣿⣯⡴⠾⠛⢋⣡⠶⠛⠛⠋⣉⣉⣉⣙⢻⣿⠀⠀⠀⠀⠀⢠⡟⠀⠈⠻⢦⣈⣿⣿⣧⠀⠀⢀⣠⣴⡾⢿⣿⣿⣿⣿⣿⡀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢠⡟⣿⡟⠀⠀⠀⣿⠈⠋⠉⢀⣠⠴⣛⣩⣤⣶⣞⣭⣿⢿⣿⣿⣻⣼⣿⣆⣀⣤⣤⣴⣿⣄⣠⣶⣦⣀⣙⣿⣿⣿⡶⣿⠟⠋⣁⣶⠟⢻⣽⣿⣿⣿⠇⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⢠⣿⣇⠀⠀⠀⢹⣠⡴⠖⢻⣷⢫⣿⣿⣿⣯⣿⣟⣿⣿⣭⣽⣿⡿⣿⣿⣿⠿⠿⢿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡿⣿⠋⠉⣿⠀⢸⣿⣿⣿⣿⣷⡀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣼⣿⣿⣤⣴⣾⢿⡅⠀⣀⣾⢿⣿⣿⣿⣿⣿⣿⡿⣿⣷⣿⣿⣿⡇⣿⣿⡇⠀⠀⢸⣿⣿⡟⢿⣿⣿⣿⣿⣿⣣⣿⠁⣿⣀⣤⡿⠀⢀⣿⣿⣿⣿⣿⡇⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⡇⠻⣿⠛⠉⠀⠈⣿⠛⢽⣿⢻⣿⣿⢿⣿⣿⣿⡇⣿⠿⣶⣶⣚⣧⣿⣿⡇⠀⠀⣸⣿⣿⣿⣄⣈⢿⣿⢿⣷⣿⣿⠀⠉⠉⠀⠀⠀⠘⡇⣿⣿⣿⣿⡇⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⡇⡀⣷⡆⠀⠀⠀⠸⣧⣻⣿⢸⣿⣿⡿⢿⣾⣻⡇⣿⣿⣿⣿⣿⣿⣿⠿⠷⠾⠛⠛⠿⢿⣿⣿⣿⣄⣿⠿⠋⢸⣿⠀⠀⠀⠀⠀⠀⠀⡇⣿⣿⣿⣿⣿⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣷⡇⣿⡇⠀⠀⠀⠀⣿⣿⣿⡾⢿⣿⣿⣿⣿⡶⠷⠾⠛⠛⠉⠁⢀⣠⠤⠴⠒⡆⢠⠀⢰⡉⠻⣿⣽⡏⠀⠀⢸⡇⠀⠀⠀⠀⠀⠀⠀⡇⣿⡿⣿⣿⣿⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣧⣿⠿⢀⣀⣤⣴⣿⣿⣿⡷⠾⠛⠋⠉⢀⣀⣠⠤⠴⠒⠻⡆⢸⠀⠀⢀⡠⠇⠸⡄⠈⣇⠀⠈⡻⢦⡀⠀⢸⡇⠀⠀⠀⠀⠀⠀⠀⡇⣿⣧⡘⠿⢻⡆
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠻⣆⣿⣿⣿⣿⣿⡿⠛⣉⣀⡀⣠⠴⠒⠋⠉⠁⠀⠀⠀⠀⠀⡇⢸⣠⠴⣫⡄⠀⠀⡇⠀⢹⠀⠀⣿⠦⢿⡀⢸⡇⠀⠀⣀⣤⣤⣿⠀⡇⣿⣿⣿⣆⢸⡇
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣿⢿⡟⣽⣿⠀⣏⠁⠀⡇⡟⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣇⠀⡖⣻⠋⠀⠀⠈⢻⠀⢈⡇⠀⠸⡄⠘⣧⢸⡇⠀⢸⣷⣾⣿⠏⠀⡇⣿⣿⣿⣿⢸⡇
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣾⠏⠛⠋⢡⣿⠀⠸⣿⣟⡃⣇⠀⠀⠀⠀⠀⣀⣠⡤⠶⠒⠋⠀⠛⠁⠀⣀⣤⣶⣿⣿⣿⣿⣷⣤⡈⠁⢻⡞⣿⠀⠈⠻⣴⠏⠀⠀⠿⢹⣿⣎⢻⣿⡇
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣾⡟⠀⠀⢀⡿⣿⠀⠀⠈⠳⡇⠻⠤⠶⠚⠋⠉⠁⠀⠀⠀⠀⠀⣀⣤⣶⣿⣿⣿⣿⣿⠿⠛⠻⣿⣿⣿⣷⣜⣷⣿⠀⠀⢀⣀⣤⣤⣶⣾⣶⣿⣿⠃⢸⡇
-⠀⠀⠀⠀⠀⠀⣀⣤⡶⠶⠖⠚⢛⠛⠳⢶⣼⡟⠀⠀⢀⣼⣹⣿⢀⠀⠀⠀⠀⡀⠀⠀⠀⠀⠀⢀⣀⣠⡤⢤⣾⣿⣿⣿⡿⠿⠛⠉⠹⡇⠀⠀⣿⣿⣟⢿⣿⣿⠹⣶⣿⡿⠛⠻⣏⠀⠉⠉⡛⣿⡿⣾⡇
-⠀⠀⠀⢀⣴⠞⠋⢰⡇⢰⣿⢻⢻⢻⢶⣦⠙⣷⡀⠀⣸⢧⠟⢿⣿⣿⣿⣷⣶⣶⣤⣴⣲⡾⠿⠟⠒⠒⠛⡇⠙⣿⠉⠀⢧⠀⠀⠀⠀⣧⠀⠀⢸⣿⣿⡎⣿⠁⢀⣼⣏⢀⣠⣤⣸⣶⠀⠀⣿⣿⣿⠛⠁
-⠀⠀⠀⣾⠃⠀⣠⡬⣤⣼⣛⠾⣼⣞⡾⡟⠀⠘⣧⣠⣏⡞⠀⠈⠻⣿⡏⢹⡟⠛⠻⣿⠁⠀⠀⠀⠀⠀⠀⣇⠀⣿⠀⠀⢸⡄⠀⠀⠀⢸⠀⠀⠘⣿⣿⣇⣿⣴⡞⢣⣽⣿⣿⣿⣿⣿⠀⠀⣿⣿⡟⠀⠀
-⠀⠀⠀⣿⡶⣿⣿⣸⣿⣿⣿⠿⠷⠾⢽⣅⡲⠶⢻⣿⣼⢁⣠⣤⣶⣿⣿⠘⡇⠀⠀⢻⡆⠀⠀⠀⠀⠀⢀⣸⡀⢹⡇⠀⠈⡇⠀⠀⠀⠈⡇⠀⠀⢿⣿⣿⢹⣿⣤⣿⣿⣿⣿⡿⢿⣟⡀⠀⣿⣿⡇⠀⠀
-⠀⠀⠀⠈⠛⠿⢯⣜⣿⠏⠀⠀⠀⢀⡿⣨⣿⣶⣤⣿⣷⣯⣿⣿⣿⣿⣿⠀⡇⠀⠀⠐⡿⣦⣰⣒⣶⣿⣿⣿⣷⣾⣇⠀⠀⢻⠀⠀⠀⠀⢷⠀⠀⢸⣿⣿⣾⣿⣸⣿⡏⢠⠟⣠⣿⣿⣿⣦⡈⢹⡇⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⢸⡟⣾⠄⠀⠀⣸⡇⣿⣿⣿⠟⠋⠛⢿⣿⣿⣿⣿⣿⡄⢻⠀⠀⠀⡇⠈⠙⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⢸⡆⠀⠀⠀⢸⡄⠀⠀⣿⣿⣇⣿⠛⠛⠻⣿⣺⣿⣿⣿⣿⣿⣿⡿⠃⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⣼⢧⡇⠀⠀⠀⣿⢸⣿⣿⡿⢦⣴⣿⣿⣷⡿⣿⡿⣿⡇⢸⡄⠀⠀⢹⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⡆⠀⠀⣇⠀⠀⠀⠀⣇⠀⠀⢸⣿⣟⢿⡀⠀⠀⠈⠉⠀⠉⠉⠉⠁⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⣿⣨⡧⠤⠤⢤⣇⡾⣿⣿⣠⣿⣿⣿⣿⣿⣿⣽⣿⣿⣷⠀⣇⠀⠀⢸⠀⠀⢸⢻⣿⣿⣿⣿⡇⣿⣿⠀⠀⢹⡄⠀⠀⢀⣸⠀⠀⠸⣿⣿⣼⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⢀⡿⣧⣤⠶⠦⣼⣿⣿⣿⡏⠈⣿⣿⢿⣿⣿⣿⣏⠉⢹⣿⡀⢻⠀⠀⠘⡇⠀⠸⡄⠙⢿⣿⣿⠇⣿⣿⡄⠀⠈⠓⠒⠋⠉⠀⠀⠀⠀⢿⠹⣯⣇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⣸⣿⢃⡏⠀⠀⢻⣿⣿⣽⣿⣦⠘⣿⣿⣿⣿⣿⢻⣿⣾⣿⡇⠘⡇⠀⠀⣇⠀⠀⣇⠀⠀⠙⢿⡇⣿⢸⣧⠀⠀⠀⠀⡴⠒⢶⠀⠀⠀⠘⣆⠀⢻⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⡿⡅⣸⢁⣄⡄⣾⣿⢿⣿⠿⣿⣿⢻⣿⣿⣟⣿⣸⣻⡿⣿⣧⠀⠙⠒⠛⠛⠀⠀⢿⣿⣄⠀⠀⠀⣿⠈⣿⡄⠀⠀⠀⡇⠀⠘⡇⠀⠀⠀⢿⣦⢸⡆⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⢸⣧⡇⣿⣼⣿⠃⣿⣿⣾⣿⣷⣤⡿⠿⢿⣿⣿⣇⣿⡟⠋⠀⣿⡀⠀⣴⠲⡆⠀⠀⠸⣿⣿⣦⠀⠀⢸⡀⢹⣧⠀⠀⠀⣇⠀⠀⢹⠀⠀⠀⠸⣿⡟⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀  ⢽⡿⣷⠏⠛⠿⢠⣿⣿⣿⣿⢿⣯⡇⠀⠀⠈⠁⠀⠀⠀⠀⠀⢸⣇⠀⢻⠀⢳⠀⠀⠀⣿⣿⣿⣷⣾⢸⡇⠈⣿⡀⠀⠀⢸⠀⠀⠈⡇⠀⠀⢀⣿⣿⣷⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-░██████████                                              ░████                                                                    
-    ░██                                                 ░██                                                                       
-    ░██    ░██░████  ░██████   ░████████   ░███████  ░████████  ░███████  ░██░████ ░█████████████   ░███████  ░██░████  ░███████  
-    ░██    ░███           ░██  ░██    ░██ ░██           ░██    ░██    ░██ ░███     ░██   ░██   ░██ ░██    ░██ ░███     ░██        
-    ░██    ░██       ░███████  ░██    ░██  ░███████     ░██    ░██    ░██ ░██      ░██   ░██   ░██ ░█████████ ░██       ░███████  
-    ░██    ░██      ░██   ░██  ░██    ░██        ░██    ░██    ░██    ░██ ░██      ░██   ░██   ░██ ░██        ░██             ░██ 
-    ░██    ░██       ░█████░██ ░██    ░██  ░███████     ░██     ░███████  ░██      ░██   ░██   ░██  ░███████  ░██       ░███████  
-                                                                                                                                                                     
-'''
-
-def intro():
-    '''Display Optimus Prime ASCII art intro.'''
-    import shutil, getpass
-
-    print('\033c', end = '')
-    width = shutil.get_terminal_size().columns
-    for line in OPTIMUS.splitlines():
-        print(line.center(width))
-    print()
-    print('-- press ENTER to continue --'.center(width), end = '', flush = True)
-    getpass.getpass('', stream = None)
-    print('\033c', end = '')
 
 
 # ============================================================================
@@ -932,6 +755,5 @@ def jaccard(pred: str, truth: str) -> float:
 
 
 if __name__ == '__main__':
-    intro()
     print(f'\n{YW}[NOTE]{X}: Use run.ipynb to train the model')
     print(f'  trainer.py is now a class that needs model/optimizer/dataloader passed to it')
