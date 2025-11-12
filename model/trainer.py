@@ -149,7 +149,7 @@ class Trainer:
 
         # get checkpoints and sort by epoch number
         checkpoints = list(self.checkpoint_dir.glob('checkpoint_epoch_*.pt'))
-        checkpoints.sort(key=lambda p: int(p.stem.split('_')[-1]))
+        checkpoints.sort(key = lambda p: int(p.stem.split('_')[-1]))
 
         # MODE: 'latest' - load most recent checkpoint
         if self.load_mode == 'latest':
@@ -174,17 +174,19 @@ class Trainer:
 
         # MODE: 'best' - load best model weights, but get epoch from latest checkpoint
         elif self.load_mode == 'best':
-            best_model_path = self.checkpoint_dir / 'best_model.pt'
+            bests = list(self.checkpoint_dir.glob('best_epoch_*.pt'))
+            bests.sort(key = lambda p: int(p.stem.split('_')[-1]))
+            best_model_path = bests[-1]
 
             if not best_model_path.exists():
-                print(f'\n{RD} [BEST MODEL NOT FOUND]{X}')
+                print(f'\n [{RD}BEST MODEL NOT FOUND{X}]')
                 print(f'  [load_mode]: best')
                 print(f'  [path]: {best_model_path}')
                 print(f'  [starting fresh training]')
                 return
 
             # Load best model weights
-            print(f'\n{GR} [LOADING BEST MODEL]{X}')
+            print(f'\n [{GR}LOADING BEST MODEL{X}]')
             print(f'  [load_mode]: best')
             print(f'  [loading weights]: {best_model_path.name}')
 
@@ -287,7 +289,7 @@ class Trainer:
             checkpoints.sort(key = lambda p: int(p.stem.split('_')[-1]))
 
             if f == 'best_epoch_*.pt':
-                if len(checkpoints) <= 3:
+                if len(checkpoints) < 3:
                     return
             else:
                 # Only cleanup if we exceed the limit
@@ -343,8 +345,8 @@ class Trainer:
             self.optimizer.step()       # update weights
 
             # update learning rate scheduler (if AdamWarlock optimizer)
-            if hasattr(self.optimizer, 'step_scheduler'):
-                self.optimizer.step_scheduler()
+            if self.optimizer.scheduler is not None:
+                self.optimizer.scheduler.step()
 
             # accumulate loss
             total_loss += loss.item()

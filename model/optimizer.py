@@ -88,7 +88,7 @@ class AdamWarlock(torch.optim.AdamW):
 
         # initialize parent AdamW optimizer with standard parameters
         super().__init__(params, lr = lr, betas = betas, eps = eps, weight_decay = weight_decay)
-        print(f'  [base learning rate]: {lr:.2e}')
+        print(f'  [base learning rate]: {lr}')
         print(f'  [weight decay]: {weight_decay}')
         print(f'  [betas]: {betas}')
 
@@ -118,10 +118,10 @@ class AdamWarlock(torch.optim.AdamW):
                 print(f'  [schedule]: warmup → cosine decay')
 
                 # phase 1: linear warmup from low LR to base_lr
-                # start_factor = 0.01 means we start at 1% of base_lr
+                # start_factor = 1e-10 means we start at ~0
                 warmup_scheduler = LinearLR(
                     self,
-                    start_factor = 0.01,      # LR starts at base_lr * 0.01 (1% of base_lr)
+                    start_factor = .01,     # LR starts at base_lr * 1e-10 ≈ 0
                     end_factor = 1.0,         # LR reaches base_lr * 1.0 = base_lr
                     total_iters = warmup_steps
                 )
@@ -165,12 +165,12 @@ class AdamWarlock(torch.optim.AdamW):
             print(f'  [warmup steps]: {warmup_steps:,}')
             print(f'  [schedule]: warmup → constant LR')
 
-            # linear warmup from low LR to base_lr
+            # linear warmup from ~0 to base_lr
             # after warmup completes, LR stays constant at base_lr
             self.scheduler = LinearLR(
                 self,
-                start_factor = 0.01,      # LR starts at base_lr * 0.01 (1% of base_lr)
-                end_factor = 1.0,         # LR reaches base_lr * 1.0 = base_lr
+                start_factor = 1e-10,
+                end_factor = 1.0,
                 total_iters = warmup_steps
             )
 
@@ -178,25 +178,6 @@ class AdamWarlock(torch.optim.AdamW):
         # self.scheduler remains None, step_scheduler() becomes a no-op
         else:
             print(f'  [scheduler]: none (constant LR)')
-
-
-    def step_scheduler(self):
-        '''
-        Update the learning rate schedule.
-
-            call this method after each optimizer.step() to advance the learning rate schedule.
-            handles warmup, cosine decay, or combined schedules automatically based on initialization parameters.
-
-            this should be called once per training step (batch), not per epoch.
-
-        Notes:
-        ------
-            does nothing if no scheduler was configured (constant LR)
-            automatically handles transitions between warmup and decay phases
-            safe to call even if scheduler is None
-        '''
-        if self.scheduler is not None:
-            self.scheduler.step()
 
     @property
     def lr(self) -> float:
