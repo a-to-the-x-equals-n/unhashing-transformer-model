@@ -557,10 +557,10 @@ class Trainer:
                 current_leven = total_levenshtein / total_samples
                 num_batches_processed = progress.n if progress.n > 0 else 1
                 progress.set_postfix_str(
-                    f'loss = {total_loss / num_batches_processed:.4f}, '
-                    f'leven = {current_leven:.4f}, '
-                    f'char = {current_char_sim:.4f},'
-                    f'jacc = {current_jacc:.4f}'
+                    f'loss={total_loss / num_batches_processed:.4f}, '
+                    f'leven={current_leven:.4f}, '
+                    f'char={current_char_sim:.4f}, '
+                    f'jacc={current_jacc:.4f}'
                 )
 
             progress.close()
