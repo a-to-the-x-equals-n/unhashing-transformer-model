@@ -238,7 +238,7 @@ class Trainer:
             Global training step across all epochs (for TensorBoard continuity).
         '''
 
-        if not self.save:
+        if not self.keep:
             return
         
         # save BEST
@@ -552,13 +552,15 @@ class Trainer:
                 total_samples += batch_size
 
                 # update progress bar
-                current_acc = correct_predictions / total_samples
+                current_jacc = total_jaccard / total_samples
                 current_char_sim = total_char_sim / total_samples
+                current_leven = total_levenshtein / total_samples
                 num_batches_processed = progress.n if progress.n > 0 else 1
                 progress.set_postfix_str(
                     f'loss = {total_loss / num_batches_processed:.4f}, '
-                    f'exact = {current_acc:.4f}, '
-                    f'char = {current_char_sim:.4f}'
+                    f'leven = {current_leven:.4f}, '
+                    f'char = {current_char_sim:.4f},'
+                    f'jacc = {current_jacc:.4f}'
                 )
 
             progress.close()

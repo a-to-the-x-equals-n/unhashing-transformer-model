@@ -1,6 +1,31 @@
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+
+class PositionalEncoding(nn.Module):
+    '''
+    Classic sine/cosine positional encoding.
+
+        Injects token index information so attention can reason about order.
+    '''
+
+    def __init__(self, d_model: int, max_len: int = 512) -> None:
+        super().__init__()
+        position = torch.arange(0, max_len).unsqueeze(1)                             # [max_len, 1]
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(max_len, d_model)
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe)                                              # no gradients; moves with .to(device)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        '''
+        Add precomputed positions to embeddings (expects [B, T, d_model]).
+        '''
+        seq_len = x.size(1)
+        return x + self.pe[:seq_len].unsqueeze(0)
 
 class OptimusPrime(nn.Module):
     '''
@@ -91,6 +116,8 @@ class OptimusPrime(nn.Module):
         # padding_idx ensures that padded positions are ignored during training updates
         self.hash_embed = nn.Embedding(vocab_size, d_model)
         self.pw_embed = nn.Embedding(pw_vocab_size, d_model, padding_idx = pad_id)
+        self.hash_pos_enc = PositionalEncoding(d_model, max_len = 64)   # plenty for 16-byte hashes
+        self.pw_pos_enc = PositionalEncoding(d_model, max_len = 256)    # passwords rarely exceed this
 
         # ---- transformer encoder ----
         # learns to model statistical relationships among hash bytes
@@ -176,7 +203,9 @@ class OptimusPrime(nn.Module):
 
         # embed raw integer tokens into dense vectors
         hash_emb = self.hash_embed(hash_batch)      # [B, 16, d_model]
+        hash_emb = self.hash_pos_enc(hash_emb)      # inject byte positions
         pw_emb = self.pw_embed(decoded_pw_batch)    # [B, T-1, d_model]
+        pw_emb = self.pw_pos_enc(pw_emb)            # inject character positions
 
         # build padding masks
         pw_pad_mask = (decoded_pw_batch == self.pad_id)      # [B, T-1]
@@ -187,6 +216,7 @@ class OptimusPrime(nn.Module):
 
         # Encode hash (NO MASK NEEDED)
         hash_encoded = self.encoder(hash_emb)  # [B, 16, d_model]
+        hash_encoded = self.encoder_projection(hash_encoded)
         # NOTE: src_key_padding_mask defaults to None
 
         # decode password
@@ -291,7 +321,9 @@ class OptimusPrime(nn.Module):
         # encode hash once
         # (doesn't change during generation)
         hash_emb = self.hash_embed(hash_batch)           # [B, 16, d_model]
+        hash_emb = self.hash_pos_enc(hash_emb)           # add byte positions so encoder sees order
         hash_encoded = self.encoder(hash_emb)            # [B, 16, d_model]
+        hash_encoded = self.encoder_projection(hash_encoded)
 
         # initialize generated sequence with <SOS> token
         generated = torch.full((B, 1), self.sos_id, dtype = torch.long, device = device)  # [B, 1]
@@ -300,6 +332,7 @@ class OptimusPrime(nn.Module):
         for _ in range(max_length - 1):  # -1 because we already have <SOS>
             # embed current sequence
             pw_emb = self.pw_embed(generated)  # [B, current_len, d_model]
+            pw_emb = self.pw_pos_enc(pw_emb)
 
             # create causal mask for current sequence length
             current_len = generated.size(1)

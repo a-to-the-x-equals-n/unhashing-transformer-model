@@ -1,3 +1,6 @@
+import math
+from typing import Literal, Optional
+
 import torch
 
 # color codes for terminal output
@@ -43,13 +46,13 @@ class AdamWarlock(torch.optim.AdamW):
 
     total_steps : int, optional
         Total number of training steps across all epochs (default: None).
-        Computed as: epochs * batches_per_epoch
-        Required if use_cosine_decay is True.
+        Retained for backward compatibility; inverse-sqrt decay does not require it.
 
-    use_cosine_decay : bool, optional
-        Whether to apply cosine annealing learning rate decay after warmup (default: False).
-        If True, learning rate decays from base_lr to 0 following a cosine curve.
-        Helps model converge to flatter minima.
+    schedule : str, optional
+        Learning-rate policy. Supported values:
+            - 'inverse_sqrt' (default): Transformer-style warmup then 1/sqrt(t) decay
+            - 'none'        : constant LR (except optional warmup)
+        The legacy `use_cosine_decay` flag maps to 'inverse_sqrt' when True.
 
     Attributes:
     -----------
@@ -81,7 +84,8 @@ class AdamWarlock(torch.optim.AdamW):
         weight_decay: float = 0.01,
         warmup_steps: int = 0,
         total_steps: int = None,
-        use_cosine_decay: bool = False
+        use_cosine_decay: Optional[bool] = None,
+        schedule: Literal['inverse_sqrt', 'none'] = 'inverse_sqrt'
     ):
 
         print(f'\n{MG}[ADAM WARLOCK INIT]{X}')
@@ -96,88 +100,58 @@ class AdamWarlock(torch.optim.AdamW):
         self.base_lr = lr
         self.warmup_steps = warmup_steps
         self.scheduler = None
+        self.schedule = schedule
+
+        # legacy compatibility: reuse old flag but map to new behavior
+        if use_cosine_decay is not None:
+            if use_cosine_decay and schedule != 'inverse_sqrt':
+                print(f'  [schedule override]: legacy use_cosine_decay=True -> inverse_sqrt')
+                self.schedule = 'inverse_sqrt'
+            elif not use_cosine_decay:
+                print(f'  [schedule override]: legacy use_cosine_decay=False -> none')
+                self.schedule = 'none'
+
+        valid_schedules = {'inverse_sqrt', 'none'}
+        if self.schedule not in valid_schedules:
+            raise ValueError(f"Unsupported schedule '{self.schedule}'. Choose from {valid_schedules}.")
 
         # ---- setup learning rate scheduler based on configuration ----
 
-        # case 1: cosine decay enabled
-        # (with or without warmup)
-        if use_cosine_decay:
-            if total_steps is None:
-                raise ValueError("total_steps required when use_cosine_decay=True")
+        if self.schedule == 'inverse_sqrt':
+            from torch.optim.lr_scheduler import LambdaLR
+            warmup_iters = max(1, warmup_steps)
+            print(f'  [scheduler]: inverse-square-root')
+            print(f'  [warmup steps]: {warmup_iters}')
 
-            from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
+            def lr_lambda(step: int) -> float:
+                """
+                Transformer-style schedule:
+                    scale linearly during warmup
+                    decay as 1/sqrt(step) afterwards, anchored at warmup boundary
+                """
+                t = step + 1  # schedulers are 0-indexed; avoid division by zero
+                if t <= warmup_iters:
+                    return t / warmup_iters
+                return math.sqrt(warmup_iters / t)
 
-            print(f'  [scheduler]: cosine annealing decay')
-            print(f'  [total steps]: {total_steps:,}')
+            self.scheduler = LambdaLR(self, lr_lambda = lr_lambda)
 
-            # case 1a: warmup + cosine decay
-            # (two-phase schedule)
+        elif self.schedule == 'none':
             if warmup_steps > 0:
-                print(f'  [warmup steps]: {warmup_steps:,}')
-                print(f'  [decay steps]: {total_steps - warmup_steps:,}')
-                print(f'  [schedule]: warmup → cosine decay')
+                from torch.optim.lr_scheduler import LambdaLR
+                warmup_iters = warmup_steps
+                print(f'  [scheduler]: warmup only → constant')
+                print(f'  [warmup steps]: {warmup_iters}')
 
-                # phase 1: linear warmup from low LR to base_lr
-                # start_factor = 1e-10 means we start at ~0
-                warmup_scheduler = LinearLR(
-                    self,
-                    start_factor = .01,     # LR starts at base_lr * 1e-10 ≈ 0
-                    end_factor = 1.0,         # LR reaches base_lr * 1.0 = base_lr
-                    total_iters = warmup_steps
-                )
+                def warmup_only(step: int) -> float:
+                    t = step + 1
+                    if t <= warmup_iters:
+                        return t / warmup_iters
+                    return 1.0
 
-                # phase 2: cosine annealing from base_lr to 0
-                # T_max is the number of steps for the cosine curve
-                # (excluding warmup)
-                cosine_scheduler = CosineAnnealingLR(
-                    self,
-                    T_max = total_steps - warmup_steps,  # decay over remaining steps
-                    eta_min = 0                          # minimum LR at end of schedule
-                )
-
-                # combine both phases:
-                #   warmup for first N steps, then cosine decay
-                #   milestones = [warmup_steps] tells SequentialLR when to switch schedulers
-                self.scheduler = SequentialLR(
-                    self,
-                    schedulers = [warmup_scheduler, cosine_scheduler],
-                    milestones = [warmup_steps]
-                )
-
-            # case 1b: cosine decay only
-            # (no warmup)
+                self.scheduler = LambdaLR(self, lr_lambda = warmup_only)
             else:
-                print(f'  [schedule]: cosine decay only (no warmup)')
-
-                # just apply cosine annealing over all training steps
-                self.scheduler = CosineAnnealingLR(
-                    self,
-                    T_max = total_steps,
-                    eta_min = 0
-                )
-
-        # case 2: warmup only
-        # (no decay after warmup)
-        elif warmup_steps > 0:
-            from torch.optim.lr_scheduler import LinearLR
-
-            print(f'  [scheduler]: warmup only')
-            print(f'  [warmup steps]: {warmup_steps:,}')
-            print(f'  [schedule]: warmup → constant LR')
-
-            # linear warmup from ~0 to base_lr
-            # after warmup completes, LR stays constant at base_lr
-            self.scheduler = LinearLR(
-                self,
-                start_factor = 1e-10,
-                end_factor = 1.0,
-                total_iters = warmup_steps
-            )
-
-        # case 3: no scheduling (constant learning rate)
-        # self.scheduler remains None, step_scheduler() becomes a no-op
-        else:
-            print(f'  [scheduler]: none (constant LR)')
+                print(f'  [scheduler]: none (constant LR)')
 
     @property
     def lr(self) -> float:
