@@ -162,7 +162,7 @@ class Bumblebee(Dataset):
 
     def decode(self, tokens: torch.Tensor) -> str:
         '''
-        Decode a sequence of token IDs back to a plaintext password string.
+        Convert a tensor of token IDs back into a raw password string.
 
             converts integer token IDs to their corresponding characters
             stops at the first <PAD> or <EOS> token encountered
@@ -175,7 +175,7 @@ class Bumblebee(Dataset):
         Returns:
         --------
         str
-            Decoded password string (excludes <PAD>, <EOS>, and anything after them)
+            Decoded password string as the model actually produced it
         '''
         chars = []
         for token in tokens:
@@ -233,4 +233,3 @@ def collate_batch(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tenso
         'password': padded,       # [B, max_len]
         # 'lengths': lengths        # [B]
     }
-
