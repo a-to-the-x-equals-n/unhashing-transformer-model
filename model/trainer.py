@@ -451,8 +451,6 @@ class Trainer:
 
             computes loss, exact match accuracy, and similarity metrics on evaluation data
             uses greedy decoding (argmax) to generate predictions
-            optionally logs metrics to TensorBoard if step is provided
-            saves predictions to TSV every 10 epochs when step is divisible by 10
 
         Parameters:
         -----------
@@ -508,7 +506,6 @@ class Trainer:
                 # accumulate loss
                 total_loss += loss.item()
 
-                # AUTOREGRESSIVE GENERATION (true inference, no teacher forcing)
                 # generate predictions token-by-token using model's own outputs
                 # Note: repetition_penalty is applied during inference only
                 generated = self.model.generate(hashes, max_length = 32, temperature = temp, repetition_penalty = penalty)  # [B, T]

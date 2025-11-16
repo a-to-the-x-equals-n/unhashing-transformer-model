@@ -1,27 +1,34 @@
 import math
-from typing import Literal, Optional
-
+from functools import partial
+from typing import Literal
 import torch
+from torch.optim.lr_scheduler import LambdaLR
 
 # color codes for terminal output
 MG = '\033[35m'     # magenta
 X  = '\033[0m'      # reset
 
 
-class _CosineWarmupSchedule:
-    '''Callable wrapper so LambdaLR can warmup then cosine without nested defs.'''
+def _inverse_sqrt_factor(step: int, warmup_iters: int) -> float:
+    t = step + 1
+    if t <= warmup_iters:
+        return t / warmup_iters
+    return math.sqrt(warmup_iters / t)
 
-    def __init__(self, warmup_steps: int, cosine_steps: int) -> None:
-        self.warmup_steps = warmup_steps
-        self.warmup_iters = max(1, warmup_steps) if warmup_steps > 0 else 0
-        self.cosine_steps = max(1, cosine_steps)
 
-    def __call__(self, step: int) -> float:
-        t = step + 1
-        if self.warmup_iters and t <= self.warmup_iters:
-            return t / self.warmup_iters
-        progress = min(max(0, t - self.warmup_steps), self.cosine_steps)
-        return 0.5 * (1.0 + math.cos(math.pi * progress / self.cosine_steps))
+def _cosine_warmup_factor(step: int, warmup_iters: int, cosine_steps: int) -> float:
+    t = step + 1
+    if warmup_iters and t <= warmup_iters:
+        return t / warmup_iters
+    progress = min(max(0, t - warmup_iters), cosine_steps)
+    return 0.5 * (1.0 + math.cos(math.pi * progress / cosine_steps))
+
+
+def _warmup_only_factor(step: int, warmup_iters: int) -> float:
+    t = step + 1
+    if t <= warmup_iters:
+        return t / warmup_iters
+    return 1.0
 
 
 
@@ -103,8 +110,7 @@ class AdamWarlock(torch.optim.AdamW):
         weight_decay: float = 0.01,
         warmup_steps: int = 0,
         total_steps: int = None,
-        use_cosine_decay: Optional[bool] = None,
-        schedule: Literal['inverse_sqrt', 'cosine', 'none'] = 'inverse_sqrt'
+        schedule: Literal['inverse_sqrt', 'cosine', 'none'] = 'cosine'
     ):
 
         print(f'\n{MG}[ADAM WARLOCK INIT]{X}')
@@ -121,69 +127,47 @@ class AdamWarlock(torch.optim.AdamW):
         self.scheduler = None
         self.schedule = schedule
 
-        # legacy compatibility: reuse old flag but map to new behavior
-        if use_cosine_decay is not None:
-            if use_cosine_decay and schedule != 'cosine':
-                print(f'  [schedule override]: legacy use_cosine_decay=True -> cosine')
-                self.schedule = 'cosine'
-            elif not use_cosine_decay:
-                print(f'  [schedule override]: legacy use_cosine_decay=False -> none')
-                self.schedule = 'none'
-
         valid_schedules = {'inverse_sqrt', 'cosine', 'none'}
         if self.schedule not in valid_schedules:
             raise ValueError(f"Unsupported schedule '{self.schedule}'. Choose from {valid_schedules}.")
 
-        # ---- setup learning rate scheduler based on configuration ----
+        # - LEARNING RATE SCHEDULER SETUP - 
 
-        if self.schedule == 'inverse_sqrt':
-            from torch.optim.lr_scheduler import LambdaLR
-            warmup_iters = max(1, warmup_steps)
-            print(f'  [scheduler]: inverse-square-root')
-            print(f'  [warmup steps]: {warmup_iters}')
+        match self.schedule:
+            case 'inverse_sqrt':
+                warmup_iters = max(1, warmup_steps)
+                lambda_fn = partial(_inverse_sqrt_factor, warmup_iters = warmup_iters)
 
-            def lr_lambda(step: int) -> float:
-                """
-                Transformer-style schedule:
-                    scale linearly during warmup
-                    decay as 1/sqrt(step) afterwards, anchored at warmup boundary
-                """
-                t = step + 1  # schedulers are 0-indexed; avoid division by zero
-                if t <= warmup_iters:
-                    return t / warmup_iters
-                return math.sqrt(warmup_iters / t)
-
-            self.scheduler = LambdaLR(self, lr_lambda = lr_lambda)
-
-        elif self.schedule == 'cosine':
-            if total_steps is None:
-                raise ValueError('schedule="cosine" requires total_steps to be set.')
-
-            from torch.optim.lr_scheduler import LambdaLR
-            cosine_steps = max(1, total_steps - warmup_steps)
-            print(f'  [scheduler]: cosine annealing (LambdaLR)')
-            print(f'  [total steps]: {total_steps}')
-            print(f'  [warmup steps]: {warmup_steps}')
-
-            scheduler_fn = _CosineWarmupSchedule(warmup_steps, cosine_steps)
-            self.scheduler = LambdaLR(self, lr_lambda = scheduler_fn)
-
-        elif self.schedule == 'none':
-            if warmup_steps > 0:
-                from torch.optim.lr_scheduler import LambdaLR
-                warmup_iters = warmup_steps
-                print(f'  [scheduler]: warmup only → constant')
+                print(f'  [scheduler]: inverse-square-root')
                 print(f'  [warmup steps]: {warmup_iters}')
+    
+            case 'cosine':
+                if total_steps is None:
+                    raise ValueError('schedule = "cosine" requires total_steps to be set.')
+                
+                cosine_steps = max(1, total_steps - warmup_steps)
+                warmup_iters = max(1, warmup_steps) if warmup_steps > 0 else 0
+                lambda_fn = partial(_cosine_warmup_factor, warmup_iters = warmup_iters, cosine_steps = cosine_steps)
 
-                def warmup_only(step: int) -> float:
-                    t = step + 1
-                    if t <= warmup_iters:
-                        return t / warmup_iters
-                    return 1.0
+                print(f'  [scheduler]: cosine annealing (LambdaLR)')
+                print(f'  [total steps]: {total_steps}')
+                print(f'  [warmup steps]: {warmup_steps}')
 
-                self.scheduler = LambdaLR(self, lr_lambda = warmup_only)
-            else:
-                print(f'  [scheduler]: none (constant LR)')
+            case 'none':
+                if warmup_steps > 0:
+                    warmup_iters = warmup_steps
+                    lambda_fn = partial(_warmup_only_factor, warmup_iters = warmup_iters)
+
+                    print(f'  [scheduler]: warmup only → constant')
+                    print(f'  [warmup steps]: {warmup_iters}')
+                else:
+                    print(f'  [scheduler]: none (constant LR)')
+
+            case _:
+                raise ValueError(f"Unsupported schedule '{self.schedule}'. Choose from {valid_schedules}.")
+
+        self.scheduler = LambdaLR(self, lr_lambda = lambda_fn)
+
 
     @property
     def lr(self) -> float:

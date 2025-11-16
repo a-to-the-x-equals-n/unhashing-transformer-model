@@ -65,7 +65,7 @@ class Bumblebee(Dataset):
         Converts a sequence of token IDs back to a plaintext password string.
     '''
 
-    def __init__(self, shard: str | Path) -> None:
+    def __init__(self,data: str | Path, sample_fraction: float | None = None, sample_seed: int | None = None) -> None:
         '''
         Initialize dataset by loading and encoding hash-password pairs.
 
@@ -75,49 +75,47 @@ class Bumblebee(Dataset):
             Path to a TSV file with two columns: <hash>\t<password>
         '''
                 
+        # optional subsampling params so we can randomly draw 10% slices without keeping entire df
+        self.sample_fraction = sample_fraction
+        self.sample_seed = sample_seed
+
         # token IDs
         self.pad_id = PAD_ID
         self.sos_id = SOS_ID
         self.eos_id = EOS_ID
 
-        # lookup table for hexadecimal conversion
-        # "htoi" = hex -> integer
-        self.htoi = {f'{i:02x}': i for i in range(256)} # 02x formats integers as 2-digit hex strings
-
-        # lookup table for plaintext characters
-        # stoi = "string to index" -> maps each allowed character to a number
-        # itos = "index to string" -> reverse mapping for decoding
-        self.stoi = {ch: i for i, ch in enumerate(ALLOWED_PW_CHARS)}
-        self.itos = {i: ch for ch, i in self.stoi.items()}
+        # lookup tables
+        self.htoi = {f'{i:02x}': i for i in range(256)}                 # "htoi" = hex -> integer
+        self.stoi = {ch: i for i, ch in enumerate(ALLOWED_PW_CHARS)}    # stoi = "string to index" -> maps each allowed character to a number
+        self.itos = {i: ch for ch, i in self.stoi.items()}              # itos = "index to string" -> reverse mapping for decoding
 
         # read the input TSV file into a pandas DataFrame
         # columns: [hash, password]
-        shard_path = Path(shard)
-        with shard_path.open('r', encoding = 'utf-8') as shard_file:
+        data_path = Path(data)
+        with data_path.open('r', encoding = 'utf-8') as shard_file:
             first_line = shard_file.readline().strip().lower()
-        has_header = first_line.startswith('hash')  # robust to future headerless shards
 
-        df = pd.read_csv(
-            shard_path,
-            sep = '\t',
-            names = ['hash', 'password'],
-            header = 0 if has_header else None  # skip header row so it never becomes data
-        )
+        has_header = first_line.startswith('hash')  # robust to future headerless shards
+        df = pd.read_csv(data_path, sep = '\t', names = ['hash', 'password'], header = 0 if has_header else None)
+
+        # randomly sample fraction of rows if requested (0.1 for 10%)
+        if self.sample_fraction is not None and 0 < self.sample_fraction < 1.0:
+            df = df.sample(frac = self.sample_fraction, random_state = self.sample_seed).reset_index(drop = True)
 
         # pandas keeps inferring float dtypes if the password is all numeric
-        # so it's choking on the stoi list comprehension later
+        # so it's choking on the stoi list comprehension
         df['password'] = df['password'].astype(str)
 
         # convert each hash (hexadecimal string) into a NumPy array of bytes
-        # MD5 hashes are 32 hex characters -> 16 bytes total
         # we iterate over the hash string in chunks of 2 characters
         hash_array = np.stack([
-            np.array(
-                [self.htoi[digest[i : i + 2]] for i in range(0, len(digest), 2)],
-                  dtype = np.uint8 # each element fits into one byte -> saves memory
-                  ) 
+            np.array([
+                self.htoi[digest[i : i + 2]] for i in range(0, len(digest), 2)],
+                dtype = np.uint8 # each element fits into one byte -> saves memory
+            ) 
             for digest in df['hash']
         ])
+
         # convert once to torch.long so __getitem__ doesn't re-wrap each element
         self.hashes = torch.from_numpy(hash_array).long()
 
@@ -130,8 +128,8 @@ class Bumblebee(Dataset):
             )
             for pw in df['password']
         ]
-        self.passwords = [torch.from_numpy(pw).long() for pw in pw_arrays]
 
+        self.passwords = [torch.from_numpy(pw).long() for pw in pw_arrays]
         del df # free weezy
 
 
