@@ -1,5 +1,6 @@
 import torch
 from torch.utils.data import Dataset
+from torch.nn.utils.rnn import pad_sequence
 import pandas as pd
 import numpy as np
 import string
@@ -91,7 +92,17 @@ class Bumblebee(Dataset):
 
         # read the input TSV file into a pandas DataFrame
         # columns: [hash, password]
-        df = pd.read_csv(shard, sep = '\t', names = ['hash', 'password'])
+        shard_path = Path(shard)
+        with shard_path.open('r', encoding = 'utf-8') as shard_file:
+            first_line = shard_file.readline().strip().lower()
+        has_header = first_line.startswith('hash')  # robust to future headerless shards
+
+        df = pd.read_csv(
+            shard_path,
+            sep = '\t',
+            names = ['hash', 'password'],
+            header = 0 if has_header else None  # skip header row so it never becomes data
+        )
 
         # pandas keeps inferring float dtypes if the password is all numeric
         # so it's choking on the stoi list comprehension later
@@ -100,23 +111,26 @@ class Bumblebee(Dataset):
         # convert each hash (hexadecimal string) into a NumPy array of bytes
         # MD5 hashes are 32 hex characters -> 16 bytes total
         # we iterate over the hash string in chunks of 2 characters
-        self.hashes = np.stack([
+        hash_array = np.stack([
             np.array(
                 [self.htoi[digest[i : i + 2]] for i in range(0, len(digest), 2)],
                   dtype = np.uint8 # each element fits into one byte -> saves memory
                   ) 
             for digest in df['hash']
         ])
+        # convert once to torch.long so __getitem__ doesn't re-wrap each element
+        self.hashes = torch.from_numpy(hash_array).long()
 
         # convert each password (plaintext string) into a sequence of token IDs
-        # lengths vary -> we store them as a list of arrays, not a single 2D matrix
-        self.passwords = [
+        # lengths vary -> we store them as a list of tensors instead of arrays
+        pw_arrays = [
             np.array(
                 [self.sos_id] + [self.stoi[ch] for ch in pw] + [self.eos_id],
                 dtype = np.uint8
             )
             for pw in df['password']
         ]
+        self.passwords = [torch.from_numpy(pw).long() for pw in pw_arrays]
 
         del df # free weezy
 
@@ -155,8 +169,8 @@ class Bumblebee(Dataset):
         # dtype long is used because most PyTorch layers (e.g., Embedding, CrossEntropyLoss)
         # expect integer indices of type torch.long
         return {
-            'hash': torch.from_numpy(self.hashes[i]).long(),
-            'password': torch.from_numpy(self.passwords[i]).long()
+            'hash': self.hashes[i],
+            'password': self.passwords[i]
         }
 
 
@@ -201,12 +215,10 @@ def collate_batch(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tenso
     Returns:
     --------
     dict[str, torch.Tensor]
-        - 'hash' : torch.LongTensor of shape [B, 16]
+        'hash' : torch.LongTensor of shape [B, 16]
                 Batched fixed-size hash tensors.
-        - 'password' : torch.LongTensor of shape [B, max_pw_len]
+        'password' : torch.LongTensor of shape [B, max_pw_len]
                 Padded password sequences (shorter ones padded with `pad_id`).
-        - 'lengths' : torch.LongTensor of shape [B]
-                The true lengths of each password before padding.
     '''
 
     # extract hash tensors and stack them directly 
@@ -216,20 +228,10 @@ def collate_batch(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tenso
     # extract password tensors (variable length)
     passwords = [item['password'] for item in batch]
 
-    # find longest password length in this batch
-    lengths = torch.tensor([len(pw) for pw in passwords], dtype = torch.long)
-    max_len = lengths.max().item()
-
-    # create a padded tensor for all passwords
-    # fill with `pad_id` so model knows which positions are "not real"
-    padded = torch.full((len(passwords), max_len), fill_value = PAD_ID, dtype = torch.long)
-
-    # copy each password tensor into the padded batch tensor
-    for i, pw in enumerate(passwords):
-        padded[i, :len(pw)] = pw  # left-align and pad the rest
+    # pad variable-length sequences efficiently in C++ instead of Python loops
+    padded = pad_sequence(passwords, batch_first = True, padding_value = PAD_ID)
 
     return {
         'hash': hashes,           # [B, 16]
         'password': padded,       # [B, max_len]
-        # 'lengths': lengths        # [B]
     }

@@ -1,5 +1,6 @@
 
 import torch
+from torch.amp import autocast, GradScaler
 from pathlib import Path
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
@@ -113,6 +114,11 @@ class Trainer:
         # eval
         self.temperature = temperature
         self.repetition_penalty = repetition_penalty
+
+        # mixed precision (disabled automatically on CPU)
+        self.use_amp = isinstance(device, str) and device.startswith('cuda') and torch.cuda.is_available()
+        self.amp_device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.scaler = GradScaler(enabled = self.use_amp)
 
         # training state
         self.start_epoch = 0
@@ -330,31 +336,35 @@ class Trainer:
         for i, batch in enumerate(progress):
             batch_start_time = time.time()
 
-            # move data to GPU/CPU
-            hashes = batch['hash'].to(self.device)
-            pw = batch['password'].to(self.device)
+            # move data to GPU/CPU (non-blocking when pinned)
+            hashes = batch['hash'].to(self.device, non_blocking = True)
+            pw = batch['password'].to(self.device, non_blocking = True)
 
-            # forward pass
-            logits = self.model(hashes, pw)
-            loss = self.model.compute_loss(logits, pw)
+            # forward pass under autocast for Tensor Core speedups
+            with autocast(device_type = self.amp_device, enabled = self.use_amp):
+                logits = self.model(hashes, pw)
+                loss = self.model.compute_loss(logits, pw)
+            loss_value = loss.item()
 
             # backward pass
             self.optimizer.zero_grad()  # reset old gradients
-            loss.backward()             # compute new gradients via backprop
+            self.scaler.scale(loss).backward()  # compute new gradients via backprop
+            self.scaler.unscale_(self.optimizer)
             grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm = 1.0) # clip grad norms to stabilize training
-            self.optimizer.step()       # update weights
+            self.scaler.step(self.optimizer)     # update weights (handles skipped steps automatically)
+            self.scaler.update()
 
             # update learning rate scheduler (if AdamWarlock optimizer)
             if self.optimizer.scheduler is not None:
                 self.optimizer.scheduler.step()
 
             # accumulate loss
-            total_loss += loss.item()
+            total_loss += loss_value
             avg_loss = total_loss / (i + 1) # average over batches processed so far
 
             # log to TensorBoard
             global_step = epoch * len(self.dataloader) + i
-            self.writer.add_scalar('Loss/batch', loss.item(), global_step)
+            self.writer.add_scalar('Loss/batch', loss_value, global_step)
             self.writer.add_scalar('Loss/epoch_avg', avg_loss, global_step)
 
             # get learning rate (use .lr property if available, otherwise fallback to param_groups)
@@ -399,6 +409,11 @@ class Trainer:
             tqdm shows progress bars with loss and grad norms
         '''
         print(f'\n{BU} [START]{X}\n')
+        try:
+            torch.cuda.empty_cache()
+            print('[gpu] cache cleared')
+        except:
+            pass
 
         for epoch in range(self.start_epoch, self.start_epoch + self.epochs):
             # train one epoch
@@ -450,13 +465,12 @@ class Trainer:
         Returns:
         --------
         dict
-            Dictionary containing:
-                - 'loss': average loss across all batches
-                - 'exact_match': exact match accuracy (fraction of passwords predicted correctly)
-                - 'char_similarity': average character-level similarity
-                - 'levenshtein': average normalized Levenshtein similarity
-                - 'jaccard': average Jaccard similarity
-                - 'total_samples': total number of samples evaluated
+            'loss': average loss across all batches
+            'exact_match': exact match accuracy (fraction of passwords predicted correctly)
+            'char_similarity': average character-level similarity
+            'levenshtein': average normalized Levenshtein similarity
+            'jaccard': average Jaccard similarity
+            'total_samples': total number of samples evaluated
         '''
         self.model.eval()
         dataloader = eval_dataloader if eval_dataloader is not None else self.dataloader
@@ -483,19 +497,20 @@ class Trainer:
 
             for batch in progress:
                 # move data to device
-                hashes = batch['hash'].to(self.device)
-                pw = batch['password'].to(self.device)
+                hashes = batch['hash'].to(self.device, non_blocking = True)
+                pw = batch['password'].to(self.device, non_blocking = True)
 
                 # forward pass for loss computation (teacher forcing)
-                logits = self.model(hashes, pw)
-                loss = self.model.compute_loss(logits, pw)
+                with autocast(device_type = self.amp_device, enabled = self.use_amp):
+                    logits = self.model(hashes, pw)
+                    loss = self.model.compute_loss(logits, pw)
 
                 # accumulate loss
                 total_loss += loss.item()
 
                 # AUTOREGRESSIVE GENERATION (true inference, no teacher forcing)
                 # generate predictions token-by-token using model's own outputs
-                # Note: repetition_penalty is applied during inference only (not during training loss)
+                # Note: repetition_penalty is applied during inference only
                 generated = self.model.generate(hashes, max_length = 32, temperature = temp, repetition_penalty = penalty)  # [B, T]
 
                 # remove <SOS> token from generated sequences for comparison

@@ -27,6 +27,8 @@ class PositionalEncoding(nn.Module):
         seq_len = x.size(1)
         return x + self.pe[:seq_len].unsqueeze(0)
 
+
+
 class OptimusPrime(nn.Module):
     '''
     Transformer encoder–decoder model that learns to map a hash digest to corresponding plaintext password.
@@ -168,6 +170,11 @@ class OptimusPrime(nn.Module):
         self.pad_id = pad_id
         self.sos_id = sos_id
         self.eos_id = eos_id
+
+        # cache causal masks so we don't reallocate every forward pass
+        self._cached_causal_mask: torch.Tensor | None = None
+        self._cached_mask_size = 0
+        self._cached_mask_device: torch.device | None = None
     
 
     def forward(self, hash_batch: torch.Tensor, pw_batch: torch.Tensor) -> torch.Tensor:
@@ -197,10 +204,6 @@ class OptimusPrime(nn.Module):
         # [<SOS>, 'h', 'e', 'l', 'l', 'o', <EOS>] -> [<SOS>, 'h', 'e', 'l', 'l', 'o']
         decoded_pw_batch = pw_batch[:, :-1]  # [B, T-1]
 
-        # Targets: everything EXCEPT first token (<SOS>)
-        # [<SOS>, 'h', 'e', 'l', 'l', 'o', <EOS>] → ['h', 'e', 'l', 'l', 'o', <EOS>]
-        # (used in compute_loss)
-
         # embed raw integer tokens into dense vectors
         hash_emb = self.hash_embed(hash_batch)      # [B, 16, d_model]
         hash_emb = self.hash_pos_enc(hash_emb)      # inject byte positions
@@ -209,15 +212,14 @@ class OptimusPrime(nn.Module):
 
         # build padding masks
         pw_pad_mask = (decoded_pw_batch == self.pad_id)      # [B, T-1]
-        
-        # causal mask for decoder
+
+        # causal mask for decoder reused from cache
         n = decoded_pw_batch.size(1)
-        causal_mask = torch.triu(torch.ones(n, n), diagonal = 1).bool().to(decoded_pw_batch.device)  # [T-1, T-1]
+        causal_mask = self._get_causal_mask(n, decoded_pw_batch.device)  # [T-1, T-1]
 
         # Encode hash (NO MASK NEEDED)
         hash_encoded = self.encoder(hash_emb)  # [B, 16, d_model]
         hash_encoded = self.encoder_projection(hash_encoded)
-        # NOTE: src_key_padding_mask defaults to None
 
         # decode password
         pw_decoded = self.decoder(
@@ -267,6 +269,22 @@ class OptimusPrime(nn.Module):
 
         return loss
 
+    def _get_causal_mask(self, size: int, device: torch.device) -> torch.Tensor:
+        '''
+        Return an upper-triangular causal mask of the requested size, reusing cached storage when possible.
+        '''
+        need_new_mask = (
+            self._cached_causal_mask is None
+            or self._cached_mask_size < size
+            or self._cached_mask_device != device
+        )
+        if need_new_mask:
+            mask = torch.triu(torch.ones(size, size, device = device), diagonal = 1).bool()
+            self._cached_causal_mask = mask
+            self._cached_mask_size = size
+            self._cached_mask_device = device
+        return self._cached_causal_mask[:size, :size]
+
 
     @torch.no_grad()
     def generate(self, hash_batch: torch.Tensor, max_length: int = 32, temperature: float = 1.0, repetition_penalty: float = 1.0) -> torch.Tensor:
@@ -305,13 +323,6 @@ class OptimusPrime(nn.Module):
         torch.Tensor
             generated password token IDs, shape [B, T] where T <= max_length
             includes <SOS> at start, <EOS> at end (or truncated at max_length)
-
-        Notes:
-        ------
-            uses greedy decoding when temperature = 1.0 (argmax)
-            generation is autoregressive: each token depends only on previously generated tokens
-            this method uses @torch.no_grad() for efficiency (no gradient computation needed)
-            all sequences in the batch generate independently
         '''
 
         self.eval()  # ensure model is in eval mode
@@ -334,9 +345,9 @@ class OptimusPrime(nn.Module):
             pw_emb = self.pw_embed(generated)  # [B, current_len, d_model]
             pw_emb = self.pw_pos_enc(pw_emb)
 
-            # create causal mask for current sequence length
+            # create causal mask for current sequence length (cached)
             current_len = generated.size(1)
-            causal_mask = torch.triu(torch.ones(current_len, current_len), diagonal=1).bool().to(device)
+            causal_mask = self._get_causal_mask(current_len, device)
 
             # decode with current sequence
             pw_decoded = self.decoder(

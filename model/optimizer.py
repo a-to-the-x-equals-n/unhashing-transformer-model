@@ -7,6 +7,24 @@ import torch
 MG = '\033[35m'     # magenta
 X  = '\033[0m'      # reset
 
+
+class _CosineWarmupSchedule:
+    '''Callable wrapper so LambdaLR can warmup then cosine without nested defs.'''
+
+    def __init__(self, warmup_steps: int, cosine_steps: int) -> None:
+        self.warmup_steps = warmup_steps
+        self.warmup_iters = max(1, warmup_steps) if warmup_steps > 0 else 0
+        self.cosine_steps = max(1, cosine_steps)
+
+    def __call__(self, step: int) -> float:
+        t = step + 1
+        if self.warmup_iters and t <= self.warmup_iters:
+            return t / self.warmup_iters
+        progress = min(max(0, t - self.warmup_steps), self.cosine_steps)
+        return 0.5 * (1.0 + math.cos(math.pi * progress / self.cosine_steps))
+
+
+
 class AdamWarlock(torch.optim.AdamW):
     '''
     AdamW optimizer with integrated learning rate scheduling.
@@ -51,8 +69,9 @@ class AdamWarlock(torch.optim.AdamW):
     schedule : str, optional
         Learning-rate policy. Supported values:
             - 'inverse_sqrt' (default): Transformer-style warmup then 1/sqrt(t) decay
+            - 'cosine'      : optional warmup followed by cosine annealing over total_steps
             - 'none'        : constant LR (except optional warmup)
-        The legacy `use_cosine_decay` flag maps to 'inverse_sqrt' when True.
+        The legacy `use_cosine_decay` flag maps to 'cosine' when True.
 
     Attributes:
     -----------
@@ -64,7 +83,7 @@ class AdamWarlock(torch.optim.AdamW):
 
     scheduler : torch.optim.lr_scheduler._LRScheduler or None
         The underlying PyTorch learning rate scheduler.
-        Can be LinearLR (warmup only), CosineAnnealingLR (decay only), or SequentialLR (both).
+        Can be LinearLR (warmup only) or LambdaLR (for inverse-sqrt/cosine/constant).
 
     Notes:
     ------
@@ -85,7 +104,7 @@ class AdamWarlock(torch.optim.AdamW):
         warmup_steps: int = 0,
         total_steps: int = None,
         use_cosine_decay: Optional[bool] = None,
-        schedule: Literal['inverse_sqrt', 'none'] = 'inverse_sqrt'
+        schedule: Literal['inverse_sqrt', 'cosine', 'none'] = 'inverse_sqrt'
     ):
 
         print(f'\n{MG}[ADAM WARLOCK INIT]{X}')
@@ -104,14 +123,14 @@ class AdamWarlock(torch.optim.AdamW):
 
         # legacy compatibility: reuse old flag but map to new behavior
         if use_cosine_decay is not None:
-            if use_cosine_decay and schedule != 'inverse_sqrt':
-                print(f'  [schedule override]: legacy use_cosine_decay=True -> inverse_sqrt')
-                self.schedule = 'inverse_sqrt'
+            if use_cosine_decay and schedule != 'cosine':
+                print(f'  [schedule override]: legacy use_cosine_decay=True -> cosine')
+                self.schedule = 'cosine'
             elif not use_cosine_decay:
                 print(f'  [schedule override]: legacy use_cosine_decay=False -> none')
                 self.schedule = 'none'
 
-        valid_schedules = {'inverse_sqrt', 'none'}
+        valid_schedules = {'inverse_sqrt', 'cosine', 'none'}
         if self.schedule not in valid_schedules:
             raise ValueError(f"Unsupported schedule '{self.schedule}'. Choose from {valid_schedules}.")
 
@@ -135,6 +154,19 @@ class AdamWarlock(torch.optim.AdamW):
                 return math.sqrt(warmup_iters / t)
 
             self.scheduler = LambdaLR(self, lr_lambda = lr_lambda)
+
+        elif self.schedule == 'cosine':
+            if total_steps is None:
+                raise ValueError('schedule="cosine" requires total_steps to be set.')
+
+            from torch.optim.lr_scheduler import LambdaLR
+            cosine_steps = max(1, total_steps - warmup_steps)
+            print(f'  [scheduler]: cosine annealing (LambdaLR)')
+            print(f'  [total steps]: {total_steps}')
+            print(f'  [warmup steps]: {warmup_steps}')
+
+            scheduler_fn = _CosineWarmupSchedule(warmup_steps, cosine_steps)
+            self.scheduler = LambdaLR(self, lr_lambda = scheduler_fn)
 
         elif self.schedule == 'none':
             if warmup_steps > 0:
