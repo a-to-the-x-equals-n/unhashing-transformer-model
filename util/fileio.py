@@ -1,7 +1,10 @@
+import csv
 import json
 import yaml
 import math
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterable, Iterator, Sequence
 
 class FileIO:
     # global root directory one level up from cwd
@@ -56,13 +59,49 @@ class FileIO:
 
     # text
     @staticmethod
-    def load_txt(path: str | Path) -> list[str]:
+    def iter_txt(path: str | Path, *, drop_blank: bool = True, strip_whitespace: bool = True) -> Iterator[str]:
+        '''
+        Stream plaintext lines from disk and optionally clean up whitespace.
+
+        Parameters
+        ----------
+        path : str | Path
+            Input text file; resolved relative to project root.
+        drop_blank : bool
+            Skip empty strings entirely when True.
+        strip_whitespace : bool
+            Remove leading/trailing whitespace so passwords are clean.
+
+        Yields
+        ------
+        str
+            One plaintext line at a time.
+
+        Example
+        -------
+        >>> pw_iter = FileIO.iter_txt('data/sample.txt')
+        >>> next(pw_iter)
+        'hunter2'
+        >>> next(pw_iter)
+        'letmein'
+        '''
         p = FileIO.resolve(path)
 
-        with p.open('r', encoding = 'utf-8', errors = 'ignore') as f:
-            lines =  [line.rstrip('\n') for line in f]
+        with p.open('r', encoding = 'utf-8', errors = 'ignore') as handle:
+            for raw in handle:
+                line = raw.rstrip('\n')
+                if strip_whitespace:
+                    line = line.strip()
+                if drop_blank and not line:
+                    continue
+                yield line
 
-        return lines
+    @staticmethod
+    def load_txt(path: str | Path, **kwargs) -> list[str]:
+        '''
+        Convenience wrapper that accumulates iter_txt into a list.
+        '''
+        return list(FileIO.iter_txt(path, **kwargs))
 
     @staticmethod
     def save_txt(lines: list[str], path: str | Path) -> None:
@@ -72,6 +111,50 @@ class FileIO:
         with p.open('w', encoding = 'utf-8') as f:
             f.write('\n'.join(lines))
         print(f'saved {type(lines)} to {p}')
+
+    @staticmethod
+    @contextmanager
+    def tsv_writer(path: str | Path, header: Sequence[str] | None = None):
+        '''
+        Context manager that yields a CSV writer configured for TSV output.
+
+        Example
+        -------
+        >>> with FileIO.tsv_writer('data/out.tsv') as writer:
+        ...     writer.writerow(('hash', 'password'))
+        ...     writer.writerow(('5f4dcc3b5aa765d61d8327deb882cf99', 'password'))
+        '''
+        p = FileIO.resolve(path)
+        p.parent.mkdir(parents = True, exist_ok = True)
+
+        with p.open('w', encoding = 'utf-8', newline = '') as handle:
+            writer = csv.writer(handle, delimiter = '\t', lineterminator = '\n')
+            if header:
+                writer.writerow(header)
+            yield writer
+
+    @staticmethod
+    def save_tsv(rows: Iterable[Sequence[str]], path: str | Path, header: Sequence[str] | None = None) -> int:
+        '''
+        Write an iterable of rows to disk as TSV.
+
+        Returns the number of rows written (excluding the header).
+
+        Example
+        -------
+        >>> rows = [('5f4dcc3b5aa765d61d8327deb882cf99', 'password')]
+        >>> FileIO.save_tsv(rows, 'data/train.tsv', header = ('hash', 'password'))
+        saved 1 rows to ...
+        1
+        '''
+        count = 0
+        with FileIO.tsv_writer(path, header) as writer:
+            for row in rows:
+                writer.writerow(row)
+                count += 1
+
+        print(f'saved {count} rows to {FileIO.resolve(path)}')
+        return count
 
     @staticmethod
     def shard_file(filepath: str | Path, shards: int) -> None:

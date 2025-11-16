@@ -3,3 +3,4 @@ data/source_data/dirty/*.yaml filter=lfs diff=lfs merge=lfs -text
 data/source_data/clean/*.yaml filter=lfs diff=lfs merge=lfs -text
 data/training/1M_train.tsv filter=lfs diff=lfs merge=lfs -text
 data/training/shards/*.tsv filter=lfs diff=lfs merge=lfs -text
+data/training/10M_train.tsv filter=lfs diff=lfs merge=lfs -text

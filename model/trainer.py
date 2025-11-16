@@ -532,9 +532,14 @@ class Trainer:
                     pred_str = dataloader.dataset.decode(predictions[i])
                     truth_str = dataloader.dataset.decode(targets[i])
 
-                    total_char_sim += char_similarity(pred_str, truth_str)
-                    total_levenshtein += levenshtein(pred_str, truth_str)
-                    total_jaccard += jaccard(pred_str, truth_str)
+                    # cache per-sample similarity metrics so we don't recompute when saving
+                    sample_char_sim = char_similarity(pred_str, truth_str)
+                    sample_lev = levenshtein(pred_str, truth_str)
+                    sample_jacc = jaccard(pred_str, truth_str)
+
+                    total_char_sim += sample_char_sim
+                    total_levenshtein += sample_lev
+                    total_jaccard += sample_jacc
 
                     # collect predictions for saving if needed
                     if save_predictions:
@@ -543,10 +548,12 @@ class Trainer:
                         hash_hex = ''.join(f'{byte:02x}' for byte in hash_bytes)
 
                         predictions_list.append({
-                            'epoch': step,
                             'hash': hash_hex,
                             'ground_truth': truth_str,
-                            'prediction': pred_str
+                            'prediction': pred_str,
+                            'char_similarity': f'{sample_char_sim:.5f}',
+                            'levenshtein': f'{sample_lev:.5f}',
+                            'jaccard': f'{sample_jacc:.5f}'
                         })
 
                 total_samples += batch_size
