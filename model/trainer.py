@@ -1,6 +1,7 @@
 
 import torch
 from torch.amp import autocast, GradScaler
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from pathlib import Path
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
@@ -181,7 +182,13 @@ class Trainer:
         elif self.load_mode == 'best':
             bests = list(self.checkpoint_dir.glob('best_epoch_*.pt'))
             bests.sort(key = lambda p: int(p.stem.split('_')[-1]))
-            best_model_path = bests[-1]
+
+            try:
+                best_model_path = bests[-1]
+            except IndexError:
+                print(f'\n [{RD}no best exists{X}]')
+                print(f'  [starting fresh training]')
+                return
 
             if not best_model_path.exists():
                 print(f'\n [{RD}best not found{X}]')
@@ -218,6 +225,42 @@ class Trainer:
             print(f' [load_mode]: {self.load_mode}')
             print(f' [valid modes]: latest, best, none')
             print(f' [starting fresh training]')
+
+
+    def _cleanup_old_checkpoints(self):
+        '''
+        Remove old checkpoint files to keep only the most recent N checkpoints.
+
+            keeps the max_checkpoints most recent checkpoint_epoch_*.pt files
+            does NOT delete best_model.pt
+            silently handles errors (e.g., file already deleted)
+
+        Example:
+            If max_checkpoints = 5 and there are 7 checkpoints, the oldest 2 are deleted
+        '''
+
+        # Get checkpoints and sort by epoch number (not alphabetically)
+        tensorfiles = ['checkpoint_epoch_*.pt', 'best_epoch_*.pt']
+        for f in tensorfiles:
+            checkpoints = list(self.checkpoint_dir.glob(f))
+            checkpoints.sort(key = lambda p: int(p.stem.split('_')[-1]))
+
+            if f[:4] == 'best':
+                if len(checkpoints) < 3:
+                    return
+            else:
+                # Only cleanup if we exceed the limit
+                if len(checkpoints) <= self.max_checkpoints:
+                    return
+
+            # Delete oldest checkpoints
+            num_to_delete = len(checkpoints) - self.max_checkpoints if not f[:4] == 'best' else len(checkpoints) - 3
+            for checkpoint in checkpoints[:num_to_delete]:
+                try:
+                    checkpoint.unlink()
+                    print(f'    [cleanup]: removed {checkpoint.name}')
+                except Exception as e:
+                    print(f'    [{YW}WARNING{X}]: Could not delete {checkpoint.name}: {e}')
 
 
     def save(self, epoch: int, loss: float, global_step: int | None = None):
@@ -272,44 +315,10 @@ class Trainer:
             }
             torch.save(checkpoint, checkpoint_path)
 
-
-    def _cleanup_old_checkpoints(self):
-        '''
-        Remove old checkpoint files to keep only the most recent N checkpoints.
-
-            keeps the max_checkpoints most recent checkpoint_epoch_*.pt files
-            does NOT delete best_model.pt
-            silently handles errors (e.g., file already deleted)
-
-        Example:
-            If max_checkpoints = 5 and there are 7 checkpoints, the oldest 2 are deleted
-        '''
-
-        # Get checkpoints and sort by epoch number (not alphabetically)
-        tensorfiles = ['checkpoint_epoch_*.pt', 'best_epoch_*.pt']
-        for f in tensorfiles:
-            checkpoints = list(self.checkpoint_dir.glob(f))
-            checkpoints.sort(key = lambda p: int(p.stem.split('_')[-1]))
-
-            if f == 'best_epoch_*.pt':
-                if len(checkpoints) < 3:
-                    return
-            else:
-                # Only cleanup if we exceed the limit
-                if len(checkpoints) <= self.max_checkpoints:
-                    return
-
-            # Delete oldest checkpoints
-            num_to_delete = len(checkpoints) - self.max_checkpoints
-            for checkpoint in checkpoints[:num_to_delete]:
-                try:
-                    checkpoint.unlink()
-                    print(f'    [cleanup]: removed {checkpoint.name}')
-                except Exception as e:
-                    print(f'    [{YW}WARNING{X}]: Could not delete {checkpoint.name}: {e}')
+        self._cleanup_old_checkpoints()
 
 
-    def train(self, epoch: int) -> float:
+    def train(self, epoch: int, /, *, start: int = -1, end: int = -1) -> float:
         '''
         Train for one epoch.
 
@@ -326,7 +335,6 @@ class Trainer:
     
         try:
             torch.cuda.empty_cache()
-            print(' [gpu] cache cleared')
         except:
             pass
 
@@ -335,12 +343,22 @@ class Trainer:
         epoch_start_time = time.time()
         print()
         
+        # restart cosine schedulers so each epoch rewarms
+        scheduler = getattr(self.optimizer, 'scheduler', None)
+        if isinstance(scheduler, CosineAnnealingWarmRestarts):
+            scheduler.last_epoch = -1
+            scheduler.T_cur = 0
+            if hasattr(scheduler, '_step_count'):
+                scheduler._step_count = 0
+
+        start = start if start >= 0 else self.start_epoch
+        end = end if end >= 0 else self.epochs
+
         # progress bar
-        progress = tqdm(self.dataloader, desc = f'Epoch {epoch + 1}/{self.start_epoch + self.epochs}', leave = True, unit = ' batch')
+        progress = tqdm(self.dataloader, desc = f'Epoch {epoch + 1}/{end}', leave = True, unit = ' batch')
 
         for i, batch in enumerate(progress):
             batch_start_time = time.time()
-
 
             # move data to GPU/CPU (non-blocking when pinned)
             hashes = batch['hash'].to(self.device, non_blocking = True)
