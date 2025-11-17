@@ -148,9 +148,9 @@ class Trainer:
         self.load_mode = self.load_mode if not load_mode else load_mode
         
         if self.load_mode == 'none':
-            print(f'\n{YW} [CHECKPOINT LOADING DISABLED]{X}')
-            print(f'  [load_mode]: none')
-            print(f'  [starting fresh training]')
+            print(f'\n[{YW}checkpoints disabled{X}]')
+            print(f' [load_mode]: none')
+            print(f' [starting fresh training]')
             return
 
         # get checkpoints and sort by epoch number
@@ -161,9 +161,8 @@ class Trainer:
         if self.load_mode == 'latest':
             if checkpoints:
                 latest_checkpoint = checkpoints[-1]
-                print(f'\n{YW} [LOADING LATEST CHECKPOINT]{X}')
-                print(f'  [load_mode]: latest')
-                print(f'  [loading]: {latest_checkpoint.name}')
+                print(f'\n[{YW}loading latest checkpoint{X}]')
+                print(f' [loading]: {latest_checkpoint.name}')
 
                 checkpoint = torch.load(latest_checkpoint, map_location = self.device)
                 self.model.load_state_dict(checkpoint['model_state_dict'])
@@ -171,12 +170,12 @@ class Trainer:
                 self.start_epoch = checkpoint['epoch'] + 1
                 self.best_loss = checkpoint.get('best_loss', float('inf'))
 
-                print(f'  [resuming from epoch]: {self.start_epoch}')
-                print(f'  [best loss so far]: {self.best_loss:.4f}')
+                print(f' [resuming from epoch]: {self.start_epoch}')
+                print(f' [best loss so far]: {self.best_loss:.4f}')
             else:
-                print(f'\n{YW} [NO CHECKPOINT FOUND]{X}')
-                print(f'  [load_mode]: latest')
-                print(f'  [starting fresh training]')
+                print(f'\n[{YW}no checkpoints{X}]')
+                print(f' [load_mode]: latest')
+                print(f' [starting fresh training]')
 
         # MODE: 'best' - load best model weights, but get epoch from latest checkpoint
         elif self.load_mode == 'best':
@@ -185,16 +184,14 @@ class Trainer:
             best_model_path = bests[-1]
 
             if not best_model_path.exists():
-                print(f'\n [{RD}BEST MODEL NOT FOUND{X}]')
-                print(f'  [load_mode]: best')
+                print(f'\n [{RD}best not found{X}]')
                 print(f'  [path]: {best_model_path}')
                 print(f'  [starting fresh training]')
                 return
 
             # Load best model weights
-            print(f'\n [{GR}LOADING BEST MODEL{X}]')
-            print(f'  [load_mode]: best')
-            print(f'  [loading weights]: {best_model_path.name}')
+            print(f'\n[{GR}loading best{X}]')
+            print(f' [loading weights]: {best_model_path.name}')
 
             best_checkpoint = torch.load(best_model_path, map_location = self.device)
             self.model.load_state_dict(best_checkpoint['model_state_dict'])
@@ -204,23 +201,23 @@ class Trainer:
             # Get epoch from latest checkpoint (for proper continuation)
             if checkpoints:
                 latest_checkpoint = checkpoints[-1]
-                print(f'  [getting epoch from]: {latest_checkpoint.name}')
+                print(f' [getting epoch from]: {latest_checkpoint.name}')
 
                 epoch_checkpoint = torch.load(latest_checkpoint, map_location = self.device)
                 self.start_epoch = epoch_checkpoint['epoch'] + 1
 
-                print(f'  [resuming from epoch]: {self.start_epoch}')
-                print(f'  [best model loss]: {self.best_loss:.4f}')
+                print(f' [resuming from epoch]: {self.start_epoch}')
+                print(f' [best model loss]: {self.best_loss:.4f}')
             else:
-                print(f'  {YW}[WARNING]: No checkpoint found for epoch tracking{X}')
-                print(f'  [starting from epoch]: 0')
+                print(f' [{YW}warn{X}]: No checkpoint found for epoch tracking')
+                print(f' [starting from epoch]: 0')
                 self.start_epoch = 0
 
         else:
-            print(f'\n{RD} [INVALID LOAD MODE]{X}')
-            print(f'  [load_mode]: {self.load_mode}')
-            print(f'  [valid modes]: latest, best, none')
-            print(f'  [starting fresh training]')
+            print(f'\n[{RD}invalid load mode{X}]')
+            print(f' [load_mode]: {self.load_mode}')
+            print(f' [valid modes]: latest, best, none')
+            print(f' [starting fresh training]')
 
 
     def save(self, epoch: int, loss: float, global_step: int | None = None):
@@ -260,7 +257,7 @@ class Trainer:
                 'loss': self.best_loss
             }, best_model_path)
 
-            print(f'    [{GR}new best saved{X}]: {previous_best:.4f} -> {self.best_loss:.4f}')
+            print(f' [{GR}new best saved{X}]: {previous_best:.4f} -> {self.best_loss:.4f}')
 
         # save CHECKPOINT
         else:
@@ -287,8 +284,8 @@ class Trainer:
         Example:
             If max_checkpoints = 5 and there are 7 checkpoints, the oldest 2 are deleted
         '''
-        # Get checkpoints and sort by epoch number (not alphabetically)
 
+        # Get checkpoints and sort by epoch number (not alphabetically)
         tensorfiles = ['checkpoint_epoch_*.pt', 'best_epoch_*.pt']
         for f in tensorfiles:
             checkpoints = list(self.checkpoint_dir.glob(f))
@@ -312,7 +309,7 @@ class Trainer:
                     print(f'    [{YW}WARNING{X}]: Could not delete {checkpoint.name}: {e}')
 
 
-    def train_epoch(self, epoch: int) -> float:
+    def train(self, epoch: int) -> float:
         '''
         Train for one epoch.
 
@@ -326,15 +323,24 @@ class Trainer:
         float
             Average loss for this epoch
         '''
+    
+        try:
+            torch.cuda.empty_cache()
+            print(' [gpu] cache cleared')
+        except:
+            pass
+
         self.model.train()
         total_loss = 0.0
         epoch_start_time = time.time()
-
+        print()
+        
         # progress bar
         progress = tqdm(self.dataloader, desc = f'Epoch {epoch + 1}/{self.start_epoch + self.epochs}', leave = True, unit = ' batch')
 
         for i, batch in enumerate(progress):
             batch_start_time = time.time()
+
 
             # move data to GPU/CPU (non-blocking when pinned)
             hashes = batch['hash'].to(self.device, non_blocking = True)
@@ -387,62 +393,12 @@ class Trainer:
         self.writer.add_scalar('Loss/epoch_final', final_epoch_loss, epoch)
         self.writer.add_scalar('Time/epoch_minutes', epoch_time / 60, epoch)
 
-        print(f'\n [epoch {epoch + 1} / {self.start_epoch + self.epochs} complete]')
-        print(f'  [loss]: {final_epoch_loss:.4f}')
-        print(f'  [time]: {epoch_time / 60:.2f} minutes')
+        print(f'\n[epoch {epoch + 1} / {self.start_epoch + self.epochs} complete]')
+        print(f' [loss]: {final_epoch_loss:.4f}')
+        print(f' [time]: {epoch_time / 60:.2f} minutes')
 
         self._cleanup_old_checkpoints()
         return final_epoch_loss, global_step
-
-
-    def train(self):
-        '''
-        Execute the main training loop across all epochs
-
-            for each epoch:
-                calls train_epoch() to perform forward/backward passes
-                saves checkpoint every N epochs (based on self.checkpoint_interval)
-                saves best model if current epoch loss is lowest so far
-                runs evaluation every 10 epochs if eval_dataloader is provided
-
-            all training metrics are logged to TensorBoard
-            tqdm shows progress bars with loss and grad norms
-        '''
-        print(f'\n{BU} [START]{X}\n')
-        try:
-            torch.cuda.empty_cache()
-            print('[gpu] cache cleared')
-        except:
-            pass
-
-        for epoch in range(self.start_epoch, self.start_epoch + self.epochs):
-            # train one epoch
-            epoch_loss, global_step = self.train_epoch(epoch)
-
-            # save checkpoint
-            if (epoch + 1) % self.checkpoint_interval == 0:
-                self.save(epoch, epoch_loss, global_step)
-
-            # save best
-            if epoch_loss < self.best_loss:
-                self.save(epoch, epoch_loss)
-
-            # run evaluation every 10 epochs
-            if self.eval_dataloader is not None and (epoch + 1) % self.eval_checkpoint == 0:
-                print(f'\n{CY} [STARTING EVALUATION at epoch {epoch + 1}]{X}')
-                self.eval(self.eval_dataloader, step = epoch + 1)
-
-            print()
-
-        self.writer.close()
-        print(f'\n{BU} [COMPLETE]{X}')
-        print(f'  [best loss]: {self.best_loss:.4f}')
-        print(f'  [checkpoints saved]: {self.checkpoint_dir}\n')
-        print(f' [TensorBoard]: {YW}tensorboard --logdir=runs{X}')
-        print(f'  [TensorBoard dashboard]: http://localhost:6006')
-        print(f'  [upload TensorBoard logs]:\n\t{YW}tensorboard dev upload --logdir runs/optimus_prime{X} \\\
-            \n\t\t{YW}--name {X}{CY}"Optimus Prime - MD5 Hash Inversion"{X} \\\
-            \n\t\t{YW}--description {X}{CY}"Training run with 1M password dataset"{X}')
 
 
     def eval(self, eval_dataloader: torch.utils.data.DataLoader = None, temperature: float = None, repetition_penalty: float = None, step: int = None) -> dict:
@@ -486,9 +442,9 @@ class Trainer:
         save_predictions = step is not None and step % self.eval_checkpoint == 0
         predictions_list = [] if save_predictions else None
 
-        print(f'\n{BU} [EVALUATION]{X}')
+        print(f'\n[{BU}evaluation{X}]')
         if save_predictions:
-            print(f'  [saving predictions for epoch {step}]')
+            print(f' [saving predictions for epoch {step}]')
 
         with torch.no_grad():
             progress = tqdm(dataloader, desc = 'Evaluating', leave = True, unit = ' batch')
@@ -600,7 +556,7 @@ class Trainer:
             df = pd.DataFrame(predictions_list)
             df.to_csv(predictions_file, sep = '\t', index = False)
 
-            print(f'  [predictions saved]: {predictions_file.name}')
+            print(f' [predictions saved]: {predictions_file.name}')
 
         # log to TensorBoard if step is provided
         if step is not None and self.writer is not None:
@@ -610,12 +566,12 @@ class Trainer:
             self.writer.add_scalar('Eval/levenshtein', avg_levenshtein, step)
             self.writer.add_scalar('Eval/jaccard', avg_jaccard, step)
 
-        print(f"\n [{CY}eval results{X}]:")
-        print(f"   [loss]: {avg_loss:.4f}")
-        print(f"   [exact match]: {exact_match:.4f}")
-        print(f"   [char similarity]: {avg_char_sim:.4f}")
-        print(f"   [levenshtein]: {avg_levenshtein:.4f}")
-        print(f"   [jaccard]: {avg_jaccard:.4f}")
+        print(f"\n[eval results]:")
+        print(f" [loss]: {avg_loss:.4f}")
+        print(f" [exact match]: {exact_match:.4f}")
+        print(f" [char similarity]: {avg_char_sim:.4f}")
+        print(f" [levenshtein]: {avg_levenshtein:.4f}")
+        print(f" [jaccard]: {avg_jaccard:.4f}")
 
         return {
             'loss': avg_loss,
