@@ -216,9 +216,13 @@ model/logs/
 hide/
 n.*
 CLAUDE.*
+.claude/
 AGENTS.*
-predictions/
 model/predictions/
 model/checkpoints/
+predictions/
+predictions/*
 checkpoints/
 data/
+*.tsv
+*.pt
