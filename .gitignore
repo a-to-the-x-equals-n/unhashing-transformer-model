@@ -217,3 +217,8 @@ hide/
 n.*
 CLAUDE.*
 AGENTS.*
+model/predictions/
+model/predictions/*.tsv
+model/checkpoints/
+model/checkpoints/*.pt
+data/
