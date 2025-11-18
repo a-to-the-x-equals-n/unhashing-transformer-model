@@ -7,10 +7,10 @@ This doc serves as a record of the journey when creating this project; including
   - [Tokenization](#tokenization)
 - [Back and Fourths on filetype](#back-and-fourths-on-filetype)
   - [The Re-Tokenizing](#the-re-tokenizing)
-  - [Model Collapse](#model-collapse)
-  - [Learning Rate](#learning-rate)
-  - [Trim to fp16](#trim-to-fp16)
-  - [Gradients continue to explode](#gradients-continue-to-explode)
+  - [Model Collapse (optimus v1.1.0)](#model-collapse-optimus-v110)
+  - [Learning Rate (optimus v2.0.2)](#learning-rate-optimus-v202)
+  - [Trim to fp16 (optimus v2.1.0)](#trim-to-fp16-optimus-v210)
+  - [Gradients continue to explode (optimus v2.1.1)](#gradients-continue-to-explode-optimus-v211)
   - [`Dataset` \& `Dataloader` Refreshers](#dataset--dataloader-refreshers)
 
 
@@ -47,7 +47,7 @@ This doc serves as a record of the journey when creating this project; including
 > - might, once more, change the file type of the shards to `.npz` so all of the data is prepocessed as numpy arrays so training is even faster.
 > - will probably wait to see how fast/slow a training session is now w/ the TSV's before spending the time on it 
 
-### Model Collapse
+### Model Collapse (optimus v1.1.0)
 
 In the models [prediction file](../model/predictions/), I soon realized every prediction started with a `1`.
 
@@ -61,12 +61,12 @@ I was using __teacher forcing__ in [`model/trainer.py`](../model/trainer.py)--`l
 >prefix—but the model is biased toward predicting '1' when it doesn't have good signal from the hash.
 
 
-### Learning Rate
+### Learning Rate (optimus v2.0.2)
 
 realized learning rate was fixed, added learning rate warmup decy using cosine decay.
 
 
-### Trim to fp16
+### Trim to fp16 (optimus v2.1.0)
 
 in an attempt to speed up training, weights clipped to fp16  
 
@@ -74,11 +74,12 @@ overflow issues constantly, where it's hard to deduce meaningful training during
 
 >forced to drop lr and slow convergence; gradients exploding/overflowing virtually every batch
 
-### Gradients continue to explode
+### Gradients continue to explode (optimus v2.1.1)
 
 Realized my model's network had architectural failures, and I didn't have `nn.LayerNorm`s interwoven to help prevent gradient explosions
 
 >...forced to retrain from scratch... again // dimensionality mismatches will distort and poison the weight distribution, and the old architecture won't play nice with the new architecture...
+
 
 ### `Dataset` & `Dataloader` Refreshers
 
