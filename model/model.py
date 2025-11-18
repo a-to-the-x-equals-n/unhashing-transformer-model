@@ -148,21 +148,27 @@ class OptimusPrime(nn.Module):
         # an MLP applied after the encoder to expand representational power
         # this lets the model learn higher-order (nonlinear) statistical dependencies
         self.encoder_projection = nn.Sequential(
+            nn.LayerNorm(d_model),
             nn.Linear(d_model, ff_dim),
             nn.ReLU(),
-            nn.Linear(ff_dim, d_model)
+            nn.Dropout(dropout),
+            nn.Linear(ff_dim, d_model),
+            nn.LayerNorm(d_model)
         )
 
         # ---- deep nonlinear output projection ----
         # transforms decoder outputs through multiple layers before producing logits.
         # this prevents the model from relying on a shallow linear mapping.
         self.output_head = nn.Sequential(
+            nn.LayerNorm(d_model),
             nn.Linear(d_model, ff_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
+            nn.LayerNorm(ff_dim),
             nn.Linear(ff_dim, ff_dim // 2),
             nn.ReLU(),
             nn.Dropout(dropout),
+            nn.LayerNorm(ff_dim // 2),
             nn.Linear(ff_dim // 2, pw_vocab_size)
         )
 
@@ -175,6 +181,9 @@ class OptimusPrime(nn.Module):
         self._cached_causal_mask: torch.Tensor | None = None
         self._cached_mask_size = 0
         self._cached_mask_device: torch.device | None = None
+
+        # initialize weights for gradient stability
+        self._init_weights()
     
 
     def forward(self, hash_batch: torch.Tensor, pw_batch: torch.Tensor) -> torch.Tensor:
@@ -387,4 +396,24 @@ class OptimusPrime(nn.Module):
                 break
 
         return generated  # [B, T] where T <= max_length
-    
+
+    def _init_weights(self) -> None:
+        '''
+        Initialize model weights for gradient stability.
+
+        Uses Xavier/Glorot initialization for linear layers and small constant
+        initialization for embeddings to prevent gradient explosion.
+        '''
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                # Xavier initialization for linear layers
+                nn.init.xavier_uniform_(module.weight, gain=0.5)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+            elif isinstance(module, nn.Embedding):
+                # Small uniform initialization for embeddings
+                nn.init.uniform_(module.weight, -0.1, 0.1)
+                if module.padding_idx is not None:
+                    # Ensure padding embeddings stay zero
+                    module.weight.data[module.padding_idx].zero_()
+

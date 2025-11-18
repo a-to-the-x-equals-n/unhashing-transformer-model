@@ -9,6 +9,8 @@ This doc serves as a record of the journey when creating this project; including
   - [The Re-Tokenizing](#the-re-tokenizing)
   - [Model Collapse](#model-collapse)
   - [Learning Rate](#learning-rate)
+  - [Trim to fp16](#trim-to-fp16)
+  - [Gradients continue to explode](#gradients-continue-to-explode)
   - [`Dataset` \& `Dataloader` Refreshers](#dataset--dataloader-refreshers)
 
 
@@ -62,6 +64,21 @@ I was using __teacher forcing__ in [`model/trainer.py`](../model/trainer.py)--`l
 ### Learning Rate
 
 realized learning rate was fixed, added learning rate warmup decy using cosine decay.
+
+
+### Trim to fp16
+
+in an attempt to speed up training, weights clipped to fp16  
+
+overflow issues constantly, where it's hard to deduce meaningful training during epoch runtime because `nan` or `overflow` are being passed to the tqdm profress bar.
+
+>forced to drop lr and slow convergence; gradients exploding/overflowing virtually every batch
+
+### Gradients continue to explode
+
+Realized my model's network had architectural failures, and I didn't have `nn.LayerNorm`s interwoven to help prevent gradient explosions
+
+>...forced to retrain from scratch... again // dimensionality mismatches will distort and poison the weight distribution, and the old architecture won't play nice with the new architecture...
 
 ### `Dataset` & `Dataloader` Refreshers
 

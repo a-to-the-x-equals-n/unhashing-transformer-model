@@ -85,11 +85,6 @@ class Trainer:
 
         eval_dataloader : torch.utils.data.DataLoader, optional
             DataLoader with evaluation data. If provided, eval will run automatically every 10 epochs during training.
-
-        Notes:
-        ------
-        Learning rate scheduling is now handled by the optimizer (e.g., AdamWarlock).
-        Configure warmup and decay when creating the optimizer, not in Trainer.
         '''
 
         print(f'\n [{BU}TRAINER INIT{X}]')
@@ -119,7 +114,13 @@ class Trainer:
         # mixed precision (disabled automatically on CPU)
         self.use_amp = isinstance(device, str) and device.startswith('cuda') and torch.cuda.is_available()
         self.amp_device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        self.scaler = GradScaler(enabled = self.use_amp)
+        self.scaler = GradScaler(
+              enabled = self.use_amp,
+              init_scale = 2 ** 16,
+              growth_factor = 2.0,
+              backoff_factor = 0.5,
+              growth_interval = 1000
+          )
 
         # training state
         self.start_epoch = 0
@@ -128,22 +129,13 @@ class Trainer:
         # initialize TensorBoard
         print(f'  [init TensorBoard]')
         self.writer = SummaryWriter(log_dir = self.logs)
+        self.last_grad_norm: float | None = None
+        self.grad_overflow_events = 0
 
 
     def load(self, load_mode: str | None = None):
         '''
         Load checkpoint based on self.load_mode setting.
-
-            Modes:
-            - 'latest': Load most recent checkpoint_epoch_*.pt
-            - 'best': Load best_model.pt (lowest loss), with epoch from latest checkpoint
-            - 'none': Start fresh training from epoch 0
-
-            When loading 'best' mode:
-            - Model weights come from best_model.pt
-            - Epoch number comes from the most recent checkpoint_epoch_*.pt
-            - This ensures we continue from the correct epoch while using best weights
-
             Restores model weights, optimizer state, starting epoch, and best loss value
         '''
         self.load_mode = self.load_mode if not load_mode else load_mode
@@ -230,15 +222,7 @@ class Trainer:
     def _cleanup_old_checkpoints(self):
         '''
         Remove old checkpoint files to keep only the most recent N checkpoints.
-
-            keeps the max_checkpoints most recent checkpoint_epoch_*.pt files
-            does NOT delete best_model.pt
-            silently handles errors (e.g., file already deleted)
-
-        Example:
-            If max_checkpoints = 5 and there are 7 checkpoints, the oldest 2 are deleted
         '''
-
         # Get checkpoints and sort by epoch number (not alphabetically)
         tensorfiles = ['checkpoint_epoch_*.pt', 'best_epoch_*.pt']
         for f in tensorfiles:
@@ -265,12 +249,7 @@ class Trainer:
 
     def save(self, epoch: int, loss: float, global_step: int | None = None):
         '''
-        Save a training checkpoint to disk and cleanup old checkpoints.
-
-            saves model state, optimizer state, and training metadata to a .pt file
-            checkpoint can be used to resume training from this exact point
-            automatically removes oldest checkpoints if more than max_checkpoints exist
-            skips saving if self.save is False
+        saves model state, optimizer state, and training metadata to a .pt file
 
         Parameters:
         -----------
@@ -374,9 +353,36 @@ class Trainer:
             self.optimizer.zero_grad()  # reset old gradients
             self.scaler.scale(loss).backward()  # compute new gradients via backprop
             self.scaler.unscale_(self.optimizer)
-            grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm = 1.0) # clip grad norms to stabilize training
-            self.scaler.step(self.optimizer)     # update weights (handles skipped steps automatically)
+
+            # clip gradients (returns total norm BEFORE clipping)
+            grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm = 1.0)
+
+            # track scale to detect if step gets skipped
+            scale_before_update = self.scaler.get_scale()
+
+            # attempt optimizer step (may skip if gradients contain inf/nan)
+            self.scaler.step(self.optimizer)
             self.scaler.update()
+
+            # check if step was actually skipped (scale decreased = skip happened)
+            scale_after_update = self.scaler.get_scale()
+            step_was_skipped = scale_after_update < scale_before_update
+
+            # track gradient norm
+            grad_norm_tensor = grad_norm if torch.is_tensor(grad_norm) else torch.tensor(grad_norm, device = self.device)
+
+            if step_was_skipped:
+                self.grad_overflow_events += 1
+                # use last valid gradient norm for display
+                grad_norm_value = self.last_grad_norm if self.last_grad_norm is not None else 1.0
+            else:
+                # step succeeded - show the clipped gradient norm
+                # if original norm was inf, show 1.0 (the clipped value)
+                if torch.isfinite(grad_norm_tensor):
+                    grad_norm_value = grad_norm_tensor.item()
+                else:
+                    grad_norm_value = 1.0  # gradient was clipped to max_norm
+                self.last_grad_norm = grad_norm_value
 
             # update learning rate scheduler (if AdamWarlock optimizer)
             if self.optimizer.scheduler is not None:
@@ -395,12 +401,16 @@ class Trainer:
             current_lr = self.optimizer.lr if hasattr(self.optimizer, 'lr') else self.optimizer.param_groups[0]['lr']
             self.writer.add_scalar('Learning_rate', current_lr, global_step)
 
-            self.writer.add_scalar('Gradient/norm', grad_norm.item(), global_step)
+            self.writer.add_scalar('Gradient/norm', grad_norm_value, global_step)
+            if step_was_skipped:
+                self.writer.add_scalar('Gradient/overflow_events', self.grad_overflow_events, global_step)
             batch_time = time.time() - batch_start_time
             self.writer.add_scalar('Time/batch_seconds', batch_time, global_step)
 
             # update progress bar
-            progress.set_postfix_str(f'loss={avg_loss:.4f}, grad={grad_norm.item():.3f}, lr={current_lr:.2e}')
+            # show gradient norm with '*' if step was skipped due to overflow
+            grad_display = f'{grad_norm_value:.3f}' + ('*' if step_was_skipped else '')
+            progress.set_postfix_str(f'loss={avg_loss:.4f}, grad={grad_display}, lr={current_lr:.2e}')
 
         # close progress bar for this epoch
         progress.close()
@@ -422,7 +432,6 @@ class Trainer:
     def eval(self, eval_dataloader: torch.utils.data.DataLoader = None, temperature: float = None, repetition_penalty: float = None, step: int = None) -> dict:
         '''
         Evaluate the model on a dataset.
-
             computes loss, exact match accuracy, and similarity metrics on evaluation data
             uses greedy decoding (argmax) to generate predictions
 
@@ -601,10 +610,6 @@ class Trainer:
         }
 
 
-
-
-
-
 # ============================================================================
 # Similarity Metrics
 # ============================================================================
@@ -612,9 +617,6 @@ class Trainer:
 def char_similarity(pred: str, truth: str) -> float:
     '''
     Calculate character-level positional similarity between prediction and ground truth.
-
-        compares characters at each position and returns the fraction of matching characters
-        shorter string is padded with spaces to match the length of the longer string
 
     Parameters:
     -----------
@@ -628,8 +630,6 @@ def char_similarity(pred: str, truth: str) -> float:
     --------
     float
         Similarity score in range [0.0, 1.0] where:
-            1.0 = all characters match at corresponding positions
-            0.0 = no characters match (or prediction is empty)
     '''
     if pred == '':
         return 0.0
@@ -641,9 +641,7 @@ def char_similarity(pred: str, truth: str) -> float:
 
 def _levenshtein_helper(a: str, b: str) -> int:
     '''
-    Compute raw Levenshtein edit distance between two strings using dynamic programming.
-
-        calculates the minimum number of single-character edits (insertions, deletions, substitutions)
+    calculates the minimum number of single-character edits (insertions, deletions, substitutions)
         required to transform string a into string b
 
     Parameters:
@@ -682,9 +680,6 @@ def levenshtein(pred: str, truth: str) -> float:
     '''
     Calculate normalized Levenshtein similarity between prediction and ground truth.
 
-        computes edit distance and normalizes by the maximum string length
-        accounts for insertions, deletions, and substitutions
-
     Parameters:
     -----------
     pred : str
@@ -697,12 +692,6 @@ def levenshtein(pred: str, truth: str) -> float:
     --------
     float
         Similarity score in range [0.0, 1.0] where:
-            1.0 = strings are identical (zero edit distance)
-            0.0 = maximum edit distance (completely different)
-
-    Notes:
-    ------
-    Normalized as: 1.0 - (edit_distance / max_length)
     '''
     # if both are empty, they're identical
     if len(pred) == 0 and len(truth) == 0:
@@ -717,11 +706,10 @@ def levenshtein(pred: str, truth: str) -> float:
 
 def jaccard(pred: str, truth: str) -> float:
     '''
-    Calculate Jaccard similarity coefficient based on unique character sets.
-
-        measures the overlap of unique characters between prediction and ground truth
+    measures the overlap of unique characters between prediction and ground truth
         ignores character order and frequency
         only considers presence/absence
+        Computed as: |intersection| / |union| of character sets
 
     Parameters:
     -----------
@@ -735,12 +723,6 @@ def jaccard(pred: str, truth: str) -> float:
     --------
     float
         Similarity score in range [0.0, 1.0] where:
-            1.0 = identical character sets (all unique chars match)
-            0.0 = disjoint character sets (no common characters)
-
-    Notes:
-    ------
-    Computed as: |intersection| / |union| of character sets
     '''
     if pred == '':
         return 0.0
@@ -749,8 +731,3 @@ def jaccard(pred: str, truth: str) -> float:
     intersection = set_pred & set_truth
     union = set_pred | set_truth
     return len(intersection) / len(union) if union else 1.0
-
-
-if __name__ == '__main__':
-    print(f'\n{YW}[NOTE]{X}: Use run.ipynb to train the model')
-    print(f'  trainer.py is now a class that needs model/optimizer/dataloader passed to it')

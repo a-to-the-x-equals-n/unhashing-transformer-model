@@ -120,7 +120,7 @@ class AdamWarlock(torch.optim.AdamW):
                 self,
                 T_0 = total_steps,
                 T_mult = 1,
-                eta_min = 1e-4
+                eta_min = 1e-5
             )
 
         elif self.schedule == 'none':
