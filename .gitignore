@@ -221,8 +221,9 @@ AGENTS.*
 model/predictions/
 model/checkpoints/
 predictions/
-predictions/*
+predictions/*.tsv
 checkpoints/
 data/
+data/*
 *.tsv
 *.pt

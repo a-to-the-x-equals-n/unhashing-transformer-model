@@ -224,21 +224,17 @@ class Trainer:
         Remove old checkpoint files to keep only the most recent N checkpoints.
         '''
         # Get checkpoints and sort by epoch number (not alphabetically)
-        tensorfiles = ['checkpoint_epoch_*.pt', 'best_epoch_*.pt']
+        tensorfiles = ['checkpoint_epoch_*.pt']
         for f in tensorfiles:
             checkpoints = list(self.checkpoint_dir.glob(f))
             checkpoints.sort(key = lambda p: int(p.stem.split('_')[-1]))
 
-            if f[:4] == 'best':
-                if len(checkpoints) < 3:
-                    return
-            else:
-                # Only cleanup if we exceed the limit
-                if len(checkpoints) <= self.max_checkpoints:
-                    return
+            # Only cleanup if we exceed the limit
+            if len(checkpoints) <= self.max_checkpoints:
+                return
 
             # Delete oldest checkpoints
-            num_to_delete = len(checkpoints) - self.max_checkpoints if not f[:4] == 'best' else len(checkpoints) - 3
+            num_to_delete = len(checkpoints) - self.max_checkpoints
             for checkpoint in checkpoints[:num_to_delete]:
                 try:
                     checkpoint.unlink()
