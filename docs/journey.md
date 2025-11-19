@@ -11,7 +11,7 @@ This doc serves as a record of the journey when creating this project; including
   - [Learning Rate (optimus v2.0.2)](#learning-rate-optimus-v202)
   - [Trim to fp16 (optimus v2.1.0)](#trim-to-fp16-optimus-v210)
   - [Gradients continue to explode (optimus v2.1.1)](#gradients-continue-to-explode-optimus-v211)
-  - [v3.1.1 Loading 10MIL dataset](#v311-loading-10mil-dataset)
+  - [v3.0.2 Loading 10MIL dataset](#v302-loading-10mil-dataset)
 
 
 ## Beginning Stages
@@ -81,7 +81,7 @@ Realized my model's network had architectural failures, and I didn't have `nn.La
 >...forced to retrain from scratch... again // dimensionality mismatches will distort and poison the weight distribution, and the old architecture won't play nice with the new architecture...
 
 
-### v3.1.1 Loading 10MIL dataset
+### v3.0.2 Loading 10MIL dataset
 
 going to attempt loading the entire 10MIL dataset for better convergence and model updates
 
