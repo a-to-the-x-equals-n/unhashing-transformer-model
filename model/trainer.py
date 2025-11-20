@@ -41,7 +41,8 @@ class Trainer:
         eval_dataloader: torch.utils.data.DataLoader = None,
         eval_checkpoint: int = 10,
         temperature: float = 1.0,
-        repetition_penalty: float = 1.5
+        repetition_penalty: float = 1.5,
+        accumulation_steps: int = 1
     ):
         '''
         Initialize trainer with model, optimizer, and dataloader.
@@ -85,6 +86,10 @@ class Trainer:
 
         eval_dataloader : torch.utils.data.DataLoader, optional
             DataLoader with evaluation data. If provided, eval will run automatically every 10 epochs during training.
+
+        accumulation_steps : int, optional
+            Number of gradient accumulation steps. Effective batch size = batch_size * accumulation_steps.
+            Default: 1 (no accumulation)
         '''
 
         print(f'\n [{BU}TRAINER INIT{X}]')
@@ -106,6 +111,7 @@ class Trainer:
         self.load_mode = load_mode
         self.max_checkpoints = max_checkpoints
         self.eval_checkpoint = eval_checkpoint
+        self.accumulation_steps = accumulation_steps
 
         # eval
         self.temperature = temperature
@@ -343,46 +349,59 @@ class Trainer:
             with autocast(device_type = self.amp_device, enabled = self.use_amp):
                 logits = self.model(hashes, pw)
                 loss = self.model.compute_loss(logits, pw)
-            loss_value = loss.item()
+                # scale loss by accumulation steps so gradient magnitudes stay consistent
+                loss = loss / self.accumulation_steps
+            loss_value = loss.item() * self.accumulation_steps  # report actual loss (not scaled)
 
-            # backward pass
-            self.optimizer.zero_grad()  # reset old gradients
+            # backward pass (accumulates gradients)
             self.scaler.scale(loss).backward()  # compute new gradients via backprop
-            self.scaler.unscale_(self.optimizer)
 
-            # clip gradients (returns total norm BEFORE clipping)
-            grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm = 1.0)
+            # only update weights every accumulation_steps batches
+            if (i + 1) % self.accumulation_steps == 0 or (i + 1) == len(self.dataloader):
+                self.scaler.unscale_(self.optimizer)
 
-            # track scale to detect if step gets skipped
-            scale_before_update = self.scaler.get_scale()
+                # clip gradients (returns total norm BEFORE clipping)
+                grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm = 1.0)
 
-            # attempt optimizer step (may skip if gradients contain inf/nan)
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
+                # track scale to detect if step gets skipped
+                scale_before_update = self.scaler.get_scale()
 
-            # check if step was actually skipped (scale decreased = skip happened)
-            scale_after_update = self.scaler.get_scale()
-            step_was_skipped = scale_after_update < scale_before_update
+                # attempt optimizer step (may skip if gradients contain inf/nan)
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
 
-            # track gradient norm
-            grad_norm_tensor = grad_norm if torch.is_tensor(grad_norm) else torch.tensor(grad_norm, device = self.device)
+                # reset gradients after update
+                self.optimizer.zero_grad()
 
-            if step_was_skipped:
-                self.grad_overflow_events += 1
-                # use last valid gradient norm for display
-                grad_norm_value = self.last_grad_norm if self.last_grad_norm is not None else 1.0
-            else:
-                # step succeeded - show the clipped gradient norm
-                # if original norm was inf, show 1.0 (the clipped value)
-                if torch.isfinite(grad_norm_tensor):
-                    grad_norm_value = grad_norm_tensor.item()
+                # check if step was actually skipped (scale decreased = skip happened)
+                scale_after_update = self.scaler.get_scale()
+                step_was_skipped = scale_after_update < scale_before_update
+
+                # track gradient norm for display
+                grad_norm_tensor = grad_norm if torch.is_tensor(grad_norm) else torch.tensor(grad_norm, device = self.device)
+
+                if step_was_skipped:
+                    self.grad_overflow_events += 1
+                    # use last valid gradient norm for display
+                    grad_norm_value = self.last_grad_norm if self.last_grad_norm is not None else 1.0
                 else:
-                    grad_norm_value = 1.0  # gradient was clipped to max_norm
-                self.last_grad_norm = grad_norm_value
+                    # step succeeded - show the clipped gradient norm
+                    # if original norm was inf, show 1.0 (the clipped value)
+                    if torch.isfinite(grad_norm_tensor):
+                        grad_norm_value = grad_norm_tensor.item()
+                    else:
+                        grad_norm_value = 1.0  # gradient was clipped to max_norm
+                    self.last_grad_norm = grad_norm_value
+            else:
+                # accumulation step - reuse last gradient norm for display
+                grad_norm_value = self.last_grad_norm if self.last_grad_norm is not None else 0.0
+                step_was_skipped = False
 
             # update learning rate scheduler (if AdamWarlock optimizer)
-            if self.optimizer.scheduler is not None:
-                self.optimizer.scheduler.step()
+            # only step scheduler when weights are actually updated
+            if (i + 1) % self.accumulation_steps == 0 or (i + 1) == len(self.dataloader):
+                if self.optimizer.scheduler is not None:
+                    self.optimizer.scheduler.step()
 
             # accumulate loss
             total_loss += loss_value
