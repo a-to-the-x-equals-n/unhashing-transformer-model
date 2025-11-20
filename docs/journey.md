@@ -12,6 +12,7 @@ This doc serves as a record of the journey when creating this project; including
   - [Trim to fp16 (optimus v2.1.0)](#trim-to-fp16-optimus-v210)
   - [Gradients continue to explode (optimus v2.1.1)](#gradients-continue-to-explode-optimus-v211)
   - [v3.0.2 Loading 10MIL dataset](#v302-loading-10mil-dataset)
+- [Refreshers](#refreshers)
 
 
 ## Beginning Stages
@@ -86,6 +87,33 @@ Realized my model's network had architectural failures, and I didn't have `nn.La
 going to attempt loading the entire 10MIL dataset for better convergence and model updates
 
 adding gradient accumulation
+
+**Changes made:**
+- removed `TRAIN_SAMPLE_FRACTION` limit; now loads all 10M samples (was only using 15%)
+  - system has 16GB RAM, dataset is ~1GB, plenty of headroom
+<br><br>
+- removed wasteful dataset recreation every epoch
+  - was reloading entire TSV from disk each epoch, huge time sink
+<br><br>
+- implemented gradient accumulation in trainer
+  - simulates larger batch sizes without memory overhead
+  - effective batch size now tunable (256 * N)
+  - should converge faster with fewer epochs needed
+<br><br>
+- created profiling script to identify bottlenecks
+  - shows where time is actually spent
+  - can validate if GPU-bound or data-bound
+<br><br>
+
+**Expected impact:**
+- 7x more training data per epoch (10M vs 1.5M samples)
+- faster I/O (load once instead of reload every epoch)
+- faster convergence (larger effective batches)
+- overall 3-5x speedup to reach target loss
+
+
+
+## Refreshers
 
 [Building a Neural Network with PyTorch in 15 Minutes | Coding Challenge](https://www.youtube.com/watch?v=mozBidd58VQ)  
 [PyTorch DataLoader Explained: How to make Basic and Custom Datasets](https://www.youtube.com/watch?v=7tfGVOulJRM)   
