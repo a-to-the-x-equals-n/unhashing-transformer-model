@@ -72,11 +72,13 @@ def profile_training(num_batches: int = 100):
     # Create optimizer
     optimizer = AdamWarlock(
         model.parameters(),
-        lr=1e-4,
+        lr=3e-5,
         weight_decay=0.01,
-        warmup_steps=0,
-        total_steps=len(dataloader),
-        schedule='cosine'
+        t_max=len(dataloader),
+        eta_min=1e-6
+        # warmup_steps=0,
+        # total_steps=len(dataloader),
+        # schedule='cosine'
     )
 
     # Mixed precision

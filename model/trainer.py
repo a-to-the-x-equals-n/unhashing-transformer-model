@@ -1,7 +1,7 @@
 
 import torch
 from torch.amp import autocast, GradScaler
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+# from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts  # previous restart scheduler
 from pathlib import Path
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
@@ -120,13 +120,15 @@ class Trainer:
         # mixed precision (disabled automatically on CPU)
         self.use_amp = isinstance(device, str) and device.startswith('cuda') and torch.cuda.is_available()
         self.amp_device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        self.scaler = GradScaler(
-              enabled = self.use_amp,
-              init_scale = 2 ** 16,
-              growth_factor = 2.0,
-              backoff_factor = 0.5,
-              growth_interval = 1000
-          )
+        # previous scaling setup (kept for reference)
+        # self.scaler = GradScaler(
+        #       enabled = self.use_amp,
+        #       init_scale = 2 ** 12,
+        #       growth_factor = 1.5,
+        #       backoff_factor = 0.5,
+        #       growth_interval = 4000
+        #   )
+        self.scaler = None  # using bf16 autocast without GradScaler
 
         # training state
         self.start_epoch = 0
@@ -324,13 +326,13 @@ class Trainer:
         epoch_start_time = time.time()
         print()
         
-        # restart cosine schedulers so each epoch rewarms
-        scheduler = getattr(self.optimizer, 'scheduler', None)
-        if isinstance(scheduler, CosineAnnealingWarmRestarts):
-            scheduler.last_epoch = -1
-            scheduler.T_cur = 0
-            if hasattr(scheduler, '_step_count'):
-                scheduler._step_count = 0
+        # previous behavior: restart cosine restarts every epoch
+        # scheduler = getattr(self.optimizer, 'scheduler', None)
+        # if isinstance(scheduler, CosineAnnealingWarmRestarts):
+        #     scheduler.last_epoch = -1
+        #     scheduler.T_cur = 0
+        #     if hasattr(scheduler, '_step_count'):
+        #         scheduler._step_count = 0
 
         start = start if start >= 0 else self.start_epoch
         end = end if end >= 0 else self.epochs
@@ -340,13 +342,15 @@ class Trainer:
 
         for i, batch in enumerate(progress):
             batch_start_time = time.time()
+            # default when running without scaler
+            # step_was_skipped = False
 
             # move data to GPU/CPU (non-blocking when pinned)
             hashes = batch['hash'].to(self.device, non_blocking = True)
             pw = batch['password'].to(self.device, non_blocking = True)
 
             # forward pass under autocast for Tensor Core speedups
-            with autocast(device_type = self.amp_device, enabled = self.use_amp):
+            with autocast(dtype = torch.bfloat16, device_type = self.amp_device, enabled = self.use_amp):
                 logits = self.model(hashes, pw)
                 loss = self.model.compute_loss(logits, pw)
                 # scale loss by accumulation steps so gradient magnitudes stay consistent
@@ -354,48 +358,46 @@ class Trainer:
             loss_value = loss.item() * self.accumulation_steps  # report actual loss (not scaled)
 
             # backward pass (accumulates gradients)
-            self.scaler.scale(loss).backward()  # compute new gradients via backprop
+            # previous scaled version:
+            # self.scaler.scale(loss).backward()  # compute new gradients via backprop
+            loss.backward()
 
             # only update weights every accumulation_steps batches
             if (i + 1) % self.accumulation_steps == 0 or (i + 1) == len(self.dataloader):
-                self.scaler.unscale_(self.optimizer)
-
                 # clip gradients (returns total norm BEFORE clipping)
                 grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm = 1.0)
 
-                # track scale to detect if step gets skipped
-                scale_before_update = self.scaler.get_scale()
+                # previous scaler-based step (kept for reference)
+                # self.scaler.unscale_(self.optimizer)
+                # scale_before_update = self.scaler.get_scale()
+                # self.scaler.step(self.optimizer)
+                # self.scaler.update()
+                # scale_after_update = self.scaler.get_scale()
+                # step_was_skipped = scale_after_update < scale_before_update
+                # grad_norm_tensor = grad_norm if torch.is_tensor(grad_norm) else torch.tensor(grad_norm, device = self.device)
+                # if step_was_skipped:
+                #     self.grad_overflow_events += 1
+                #     grad_norm_value = self.last_grad_norm if self.last_grad_norm is not None else 1.0
+                # else:
+                #     if torch.isfinite(grad_norm_tensor):
+                #         grad_norm_value = grad_norm_tensor.item()
+                #     else:
+                #         grad_norm_value = 1.0  # gradient was clipped to max_norm
+                #     self.last_grad_norm = grad_norm_value
 
-                # attempt optimizer step (may skip if gradients contain inf/nan)
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-
-                # reset gradients after update
+                # optimizer step without scaler
+                self.optimizer.step()
                 self.optimizer.zero_grad()
 
-                # check if step was actually skipped (scale decreased = skip happened)
-                scale_after_update = self.scaler.get_scale()
-                step_was_skipped = scale_after_update < scale_before_update
-
-                # track gradient norm for display
                 grad_norm_tensor = grad_norm if torch.is_tensor(grad_norm) else torch.tensor(grad_norm, device = self.device)
-
-                if step_was_skipped:
-                    self.grad_overflow_events += 1
-                    # use last valid gradient norm for display
-                    grad_norm_value = self.last_grad_norm if self.last_grad_norm is not None else 1.0
+                if torch.isfinite(grad_norm_tensor):
+                    grad_norm_value = grad_norm_tensor.item()
                 else:
-                    # step succeeded - show the clipped gradient norm
-                    # if original norm was inf, show 1.0 (the clipped value)
-                    if torch.isfinite(grad_norm_tensor):
-                        grad_norm_value = grad_norm_tensor.item()
-                    else:
-                        grad_norm_value = 1.0  # gradient was clipped to max_norm
-                    self.last_grad_norm = grad_norm_value
+                    grad_norm_value = 1.0  # gradient was clipped to max_norm
+                self.last_grad_norm = grad_norm_value
             else:
                 # accumulation step - reuse last gradient norm for display
                 grad_norm_value = self.last_grad_norm if self.last_grad_norm is not None else 0.0
-                step_was_skipped = False
 
             # update learning rate scheduler (if AdamWarlock optimizer)
             # only step scheduler when weights are actually updated
@@ -417,14 +419,16 @@ class Trainer:
             self.writer.add_scalar('Learning_rate', current_lr, global_step)
 
             self.writer.add_scalar('Gradient/norm', grad_norm_value, global_step)
-            if step_was_skipped:
-                self.writer.add_scalar('Gradient/overflow_events', self.grad_overflow_events, global_step)
+            # previous overflow tracking
+            # if step_was_skipped:
+            #     self.writer.add_scalar('Gradient/overflow_events', self.grad_overflow_events, global_step)
             batch_time = time.time() - batch_start_time
             self.writer.add_scalar('Time/batch_seconds', batch_time, global_step)
 
             # update progress bar
-            # show gradient norm with '*' if step was skipped due to overflow
-            grad_display = f'{grad_norm_value:.3f}' + ('*' if step_was_skipped else '')
+            grad_display = f'{grad_norm_value:.3f}'
+            # previous display with overflow marker
+            # grad_display = f'{grad_norm_value:.3f}' + ('*' if step_was_skipped else '')
             progress.set_postfix_str(f'loss={avg_loss:.4f}, grad={grad_display}, lr={current_lr:.2e}')
 
         # close progress bar for this epoch
@@ -447,8 +451,6 @@ class Trainer:
     def eval(self, eval_dataloader: torch.utils.data.DataLoader = None, temperature: float = None, repetition_penalty: float = None, step: int = None) -> dict:
         '''
         Evaluate the model on a dataset.
-            computes loss, exact match accuracy, and similarity metrics on evaluation data
-            uses greedy decoding (argmax) to generate predictions
 
         Parameters:
         -----------
@@ -479,13 +481,10 @@ class Trainer:
         total_levenshtein = 0.0
         total_jaccard = 0.0
         total_samples = 0
-
-        # determine if we should save predictions (every 10 epochs)
-        save_predictions = step is not None and step % self.eval_checkpoint == 0
-        predictions_list = [] if save_predictions else None
+        predictions_list = []
 
         print(f'\n[{BU}evaluation{X}]')
-        if save_predictions:
+        if step is not None:
             print(f' [saving predictions for epoch {step}]')
 
         with torch.no_grad():
@@ -551,20 +550,19 @@ class Trainer:
                     total_levenshtein += sample_lev
                     total_jaccard += sample_jacc
 
-                    # collect predictions for saving if needed
-                    if save_predictions:
-                        # convert hash bytes back to hex string
-                        hash_bytes = hashes[i].cpu().numpy()
-                        hash_hex = ''.join(f'{byte:02x}' for byte in hash_bytes)
+                    # collect predictions for saving
+                    # convert hash bytes back to hex string
+                    hash_bytes = hashes[i].cpu().numpy()
+                    hash_hex = ''.join(f'{byte:02x}' for byte in hash_bytes)
 
-                        predictions_list.append({
-                            'hash': hash_hex,
-                            'ground_truth': truth_str,
-                            'prediction': pred_str,
-                            'char_similarity': f'{sample_char_sim:.5f}',
-                            'levenshtein': f'{sample_lev:.5f}',
-                            'jaccard': f'{sample_jacc:.5f}'
-                        })
+                    predictions_list.append({
+                        'hash': hash_hex,
+                        'ground_truth': truth_str,
+                        'prediction': pred_str,
+                        'char_similarity': f'{sample_char_sim:.5f}',
+                        'levenshtein': f'{sample_lev:.5f}',
+                        'jaccard': f'{sample_jacc:.5f}'
+                    })
 
                 total_samples += batch_size
 
@@ -588,8 +586,8 @@ class Trainer:
         avg_levenshtein = total_levenshtein / total_samples
         avg_jaccard = total_jaccard / total_samples
 
-        # save predictions to TSV if this is a milestone epoch
-        if save_predictions and predictions_list:
+        # save predictions to TSV
+        if predictions_list:
             import pandas as pd
             predictions_dir = Path(__file__).parent / 'predictions'
             predictions_dir.mkdir(exist_ok = True)

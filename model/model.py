@@ -18,7 +18,7 @@ class PositionalEncoding(nn.Module):
         pe = torch.zeros(max_len, d_model)
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
-        self.register_buffer('pe', pe)                                              # no gradients; moves with .to(device)
+        self.register_buffer('pe', pe)  # no gradients; moves with .to(device)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         '''
@@ -56,42 +56,21 @@ class OptimusPrime(nn.Module):
 
     n_heads : int, optional
         Number of attention heads per Transformer layer (default: 8).
-        NOTE: “How many separate views of attention are combined”
+        NOTE: "How many separate views of attention are combined"
 
     num_layers : int, optional
         Number of stacked encoder and decoder layers (default: 4).
-        NOTE: “Depth of the model”
+        NOTE: "Depth of the model"
 
     ff_dim : int, optional
         Size of the intermediate hidden layer within each Transformer block and projection head (default: 512). 
-        Increasing this expands model capacity.
-        NOTE: “How many neurons process each data line”
+        NOTE: "How many neurons process each data line"
 
     dropout : float, optional
         Dropout probability applied to projection layers for regularization (default: 0.1).
 
     label_smoothing : float, optional
         Label smoothing factor for cross-entropy loss (default: 0.1).
-        Prevents overconfidence by distributing probability mass to non-target classes.
-        Higher values (e.g., 0.1-0.2) reduce mode collapse but may slow convergence.
-
-    Notes:
-    ------
-    The model operates in five conceptual stages:
-        1. Hash bytes and password tokens are embedded into dense vector spaces.
-        2. Hash embeddings are processed through a Transformer encoder to learn
-           latent structural patterns in the digest.
-        3. The encoded hash representation passes through a nonlinear projection MLP,
-           enriching it with higher-order statistical features.
-        4. The Transformer decoder generates password token representations conditioned
-           on these encoded features.
-        5. A deep multi-layer projection head transforms decoder outputs into logits
-           over the password vocabulary, enabling categorical prediction via
-           cross-entropy loss.
-
-    This architecture is suitable for tasks that require learning nonlinear,
-    statistically grounded mappings between two symbolic domains, such as
-    cryptographic inversion experiments or generative password modeling.
     '''
 
     def __init__(
@@ -300,9 +279,6 @@ class OptimusPrime(nn.Module):
         '''
         Autoregressively generate passwords from hash inputs (inference mode).
 
-            generates one token at a time using the model's own predictions as context for subsequent tokens.
-            this represents true model performance.
-
         Parameters:
         -----------
         hash_batch : torch.Tensor
@@ -310,28 +286,17 @@ class OptimusPrime(nn.Module):
 
         max_length : int, optional
             maximum number of tokens to generate (default: 32)
-            generation stops early if <EOS> is predicted
 
         temperature : float, optional
             sampling temperature for controlling randomness (default: 1.0)
-                temperature = 1.0: standard sampling from softmax distribution
-                temperature < 1.0: more conservative (sharper distribution, less random)
-                temperature > 1.0: more diverse (flatter distribution, more random)
-                temperature → 0: equivalent to greedy argmax
 
         repetition_penalty : float, optional
             penalty applied to tokens that were already generated (default: 0.0 = disabled)
-            typical values: 1.0-2.0 where:
-                1.0 = no penalty
-                1.2 = mild penalty (recommended for passwords)
-                2.0 = strong penalty
-            penalized_logit = original_logit / penalty_value
 
         Returns:
         --------
         torch.Tensor
             generated password token IDs, shape [B, T] where T <= max_length
-            includes <SOS> at start, <EOS> at end (or truncated at max_length)
         '''
 
         self.eval()  # ensure model is in eval mode
@@ -339,7 +304,6 @@ class OptimusPrime(nn.Module):
         device = hash_batch.device
 
         # encode hash once
-        # (doesn't change during generation)
         hash_emb = self.hash_embed(hash_batch)           # [B, 16, d_model]
         hash_emb = self.hash_pos_enc(hash_emb)           # add byte positions so encoder sees order
         hash_encoded = self.encoder(hash_emb)            # [B, 16, d_model]

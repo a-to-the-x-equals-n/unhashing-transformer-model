@@ -1,5 +1,5 @@
 import torch
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+from torch.optim.lr_scheduler import CosineAnnealingLR
 
 # color codes for terminal output
 MG = '\033[35m'     # magenta
@@ -8,14 +8,14 @@ X  = '\033[0m'      # reset
 
 class AdamWarlock(torch.optim.AdamW):
     '''
-    AdamW optimizer with integrated CosineAnnealingWarmRestarts scheduling.
+    AdamW optimizer with integrated CosineAnnealingLR scheduling.
 
     Attributes:
     -----------
     base_lr : float
         The base learning rate.
 
-    scheduler : CosineAnnealingWarmRestarts
+    scheduler : CosineAnnealingLR
         The underlying PyTorch learning rate scheduler.
     '''
     def __init__(
@@ -26,6 +26,7 @@ class AdamWarlock(torch.optim.AdamW):
         eps: float = 1e-8,
         weight_decay: float = 0.01,
         total_steps: int = None,
+        t_max: int | None = None,
         eta_min: float = 1e-5
     ):
         '''
@@ -48,8 +49,11 @@ class AdamWarlock(torch.optim.AdamW):
         weight_decay : float, optional
             Weight decay coefficient for L2 regularization (default: 0.01).
 
-        total_steps : int
-            Number of optimizer steps in one cosine cycle (e.g., len(dataloader)).
+        total_steps : int, optional
+            Backward-compat alias for t_max; use t_max for clarity.
+
+        t_max : int, optional
+            Total number of scheduler steps before reaching eta_min (monotonic cosine).
 
         eta_min : float, optional
             Minimum learning rate (default: 1e-5).
@@ -67,19 +71,32 @@ class AdamWarlock(torch.optim.AdamW):
         self.base_lr = lr
 
         # setup cosine annealing scheduler
-        if total_steps is None:
-            raise ValueError('total_steps is required (steps per epoch).')
+        # if total_steps is None:
+        #   raise ValueError('total_steps is required (steps per epoch).')
 
-        print(f' [scheduler]: CosineAnnealingWarmRestarts')
-        print(f' [steps per restart]: {total_steps}')
+        # resolve T_max for monotonic cosine decay
+        if t_max is None:
+            if total_steps is None:
+                raise ValueError('t_max or total_steps is required (total scheduler steps).')
+            t_max = total_steps
+
+        print(f' [scheduler]: CosineAnnealingLR')
+        print(f' [T_max]: {t_max} steps')
         print(f' [min learning rate]: {eta_min}')
 
-        self.scheduler = CosineAnnealingWarmRestarts(
+        self.scheduler = CosineAnnealingLR(
             self,
-            T_0 = total_steps,
-            T_mult = 1,
+            T_max = t_max,
             eta_min = eta_min
         )
+
+        # previous scheduler (kept for reference)
+        # self.scheduler = CosineAnnealingWarmRestarts(
+        #     self,
+        #     T_0 = total_steps,
+        #     T_mult = 1,
+        #     eta_min = eta_min
+        # )
 
 
     @property
