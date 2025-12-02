@@ -219,3 +219,5 @@ CLAUDE.*
 AGENTS.*
 diagrams/
 diagrams/*
+*.tsv
+*.pt
