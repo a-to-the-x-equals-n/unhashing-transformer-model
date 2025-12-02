@@ -217,3 +217,5 @@ hide/
 n.*
 CLAUDE.*
 AGENTS.*
+diagrams/
+diagrams/*
